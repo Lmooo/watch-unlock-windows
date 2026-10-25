@@ -4,7 +4,7 @@
 
 ## 使用
 
-1. 从 [Releases](https://github.com/whyy1/watch-unlock-windows/releases) 下载 `Watch Unlock_x.y.z_x64-setup.exe` 并运行，批准一次管理员确认，按向导完成安装。之后从开始菜单打开 **Watch Unlock**。卸载时，在“设置 → 应用”里找到它即可。
+1. 从 [Releases](https://github.com/whyy1/watch-unlock-windows/releases) 下载 `Watch.Unlock_x.y.z_x64-setup.exe` 并运行，批准一次管理员确认，按向导完成安装。之后从开始菜单打开 **Watch Unlock**。卸载时，在“设置 → 应用”里找到它即可。
 2. 在「附近扫描」中打开配对窗口，然后在手表的“设置 → 蓝牙”里选择这台电脑，并确认 Windows 弹出的配对请求。
 3. 在“Windows 已配对设备”里点「绑定此设备」，批准管理员确认，让手表靠近电脑，最多等 30 秒。
 4. 在概览页填写 Windows 账户密码。注意要填账户密码，不是 PIN。
