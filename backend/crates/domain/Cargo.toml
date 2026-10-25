@@ -1,0 +1,9 @@
+[package]
+name = "watch-unlock-domain"
+version = "0.1.0"
+edition = "2021"
+description = "Pure device presence policy for Watch Unlock"
+license = "AGPL-3.0-only"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

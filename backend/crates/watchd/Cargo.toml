@@ -1,0 +1,52 @@
+[package]
+name = "watchd"
+version = "0.1.0"
+edition = "2021"
+description = "Apple Watch 自动解锁 Windows 守护进程"
+license = "AGPL-3.0-only"
+
+[dependencies]
+watch-unlock-domain = { path = "../domain" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+aes = "0.8"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_SystemInformation",
+  "Win32_Graphics_Gdi",
+  "Win32_Networking_WinHttp",
+  "Win32_Security_Cryptography",
+  "Win32_Security_Authorization",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_Power",
+  "Win32_System_SystemServices",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+  "Win32_System_WinRT",
+  "Win32_Storage_FileSystem",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Devices_Bluetooth_Advertisement",
+  "Devices_Bluetooth_GenericAttributeProfile",
+  "Devices_Enumeration",
+  "Devices_Radios",
+  "Foundation",
+  "Foundation_Collections",
+  "Storage_Streams",
+]

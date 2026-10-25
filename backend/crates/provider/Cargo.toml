@@ -1,0 +1,38 @@
+[package]
+name = "watch-unlock-provider"
+version = "0.1.0"
+edition = "2021"
+description = "Apple Watch 自动解锁 Windows 的 Credential Provider（Rust COM 实现）"
+license = "AGPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+windows-core = "0.58"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+  "implement",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_SystemInformation",
+  "Win32_Graphics_Gdi",
+  "Win32_Security_Cryptography",
+  "Win32_Security_Authentication_Identity",
+  "Win32_Security_Credentials",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_EventLog",
+  "Win32_System_IO",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+]

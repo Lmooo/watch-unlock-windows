@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Watch Unlock",
+  "mainBinaryName": "WatchUnlock",
+  "version": "0.1.0",
+  "identifier": "org.watchunlock.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Watch Unlock",
+        "width": 1320,
+        "height": 960,
+        "minWidth": 820,
+        "minHeight": 650
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "whyy1",
+    "homepage": "https://github.com/whyy1/watch-unlock-windows",
+    "license": "AGPL-3.0-only",
+    "shortDescription": "Unlock Windows with an Apple Watch nearby",
+    "resources": {
+      "../../../backend/target/release/watchd.exe": "watchd.exe",
+      "../../../backend/target/release/watchd-supervisor.exe": "watchd-supervisor.exe",
+      "../../../backend/target/release/watch_unlock_provider.dll": "watch_unlock_provider.dll",
+      "../../../LICENSE": "LICENSE.txt",
+      "../../../NOTICE": "NOTICE.txt",
+      "../../../licenses/": "licenses/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "./installer.nsh",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

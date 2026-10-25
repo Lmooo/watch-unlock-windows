@@ -1,0 +1,101 @@
+[
+  {
+    "name": "alloc-stdlib",
+    "version": "0.3.0",
+    "repository": "https://github.com/dropbox/rust-alloc-no-stdlib",
+    "commit": "0a81fd6928ea3b33c8cd484aa4575d50ffb98012",
+    "path": "alloc-stdlib",
+    "license_files": [
+      {
+        "file": "alloc-stdlib/LICENSE",
+        "repository": "https://github.com/dropbox/rust-alloc-no-stdlib",
+        "commit": "0a81fd6928ea3b33c8cd484aa4575d50ffb98012",
+        "path": "LICENSE",
+        "source_url": "https://github.com/dropbox/rust-alloc-no-stdlib/blob/0a81fd6928ea3b33c8cd484aa4575d50ffb98012/LICENSE",
+        "sha256": "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+      }
+    ]
+  },
+  {
+    "name": "selectors",
+    "version": "0.38.0",
+    "repository": "https://github.com/servo/stylo",
+    "commit": "572ecba2d1600e7c3d490586692a209faf703baa",
+    "path": "selectors",
+    "authors": [
+      "The Servo Project Developers"
+    ],
+    "license_files": [
+      {
+        "file": "selectors/NOTICE",
+        "repository": "https://github.com/servo/stylo",
+        "commit": "572ecba2d1600e7c3d490586692a209faf703baa",
+        "path": "selectors/lib.rs",
+        "source_url": "https://github.com/servo/stylo/blob/572ecba2d1600e7c3d490586692a209faf703baa/selectors/lib.rs",
+        "sha256": "766674381e88a468d55e07de3596987391cf0e8beebe51baf4fddf11078785b3",
+        "notice_prefix_from": "lib.rs"
+      },
+      {
+        "file": "selectors/LICENSE-MPL-2.0",
+        "repository": "https://github.com/mozilla/bedrock",
+        "commit": "9fa617356a7473a9bd48155c044f4f6efc0c6383",
+        "path": "media/MPL/2.0/index.txt",
+        "source_url": "https://github.com/mozilla/bedrock/blob/9fa617356a7473a9bd48155c044f4f6efc0c6383/media/MPL/2.0/index.txt",
+        "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+        "referenced_license_url": "https://mozilla.org/MPL/2.0/",
+        "referenced_by": "lib.rs"
+      }
+    ]
+  },
+  {
+    "name": "webview2-com",
+    "version": "0.39.1",
+    "repository": "https://github.com/wravery/webview2-rs",
+    "commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+    "path": "crates/webview2-com",
+    "license_files": [
+      {
+        "file": "webview2-rs/LICENSE",
+        "repository": "https://github.com/wravery/webview2-rs",
+        "commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+        "path": "LICENSE",
+        "source_url": "https://github.com/wravery/webview2-rs/blob/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    ]
+  },
+  {
+    "name": "webview2-com-macros",
+    "version": "0.8.1",
+    "repository": "https://github.com/wravery/webview2-rs",
+    "commit": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+    "path": "crates/callback-macros",
+    "license_files": [
+      {
+        "file": "webview2-rs/LICENSE",
+        "repository": "https://github.com/wravery/webview2-rs",
+        "commit": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+        "path": "LICENSE",
+        "source_url": "https://github.com/wravery/webview2-rs/blob/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    ]
+  },
+  {
+    "name": "webview2-com-sys",
+    "version": "0.39.1",
+    "repository": "https://github.com/wravery/webview2-rs",
+    "commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+    "path": "crates/bindings",
+    "license_files": [
+      {
+        "file": "webview2-rs/LICENSE",
+        "repository": "https://github.com/wravery/webview2-rs",
+        "commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+        "path": "LICENSE",
+        "source_url": "https://github.com/wravery/webview2-rs/blob/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+        "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+      }
+    ]
+  }
+]

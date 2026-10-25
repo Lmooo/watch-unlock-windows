@@ -1,0 +1,33 @@
+{
+  "component": "WebView2Loader.dll",
+  "architecture": "x64",
+  "sdk_package": "Microsoft.Web.WebView2",
+  "sdk_version": "1.0.3800.47",
+  "sdk_public_source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47",
+  "sdk_archive_url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3800.47/microsoft.web.webview2.1.0.3800.47.nupkg",
+  "sdk_archive_sha256": "56c9f26bdd07916a2d1949fb58a5c7e434dfa1173577dca879206050c4e718db",
+  "sdk_archive_bytes": 8973762,
+  "sdk_loader_path": "build/native/x64/WebView2Loader.dll",
+  "cargo_package": "webview2-com-sys",
+  "cargo_version": "0.39.1",
+  "cargo_loader_path": "x64/WebView2Loader.dll",
+  "distributed_file": "WebView2Loader.dll",
+  "loader_file_version": "1.0.3800.47",
+  "loader_bytes": 160880,
+  "loader_sha256": "86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5",
+  "declared_sdk_license": "file:LICENSE.txt",
+  "license_files": [
+    {
+      "file": "LICENSE.txt",
+      "archive_path": "LICENSE.txt",
+      "bytes": 1487,
+      "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55"
+    },
+    {
+      "file": "NOTICE.txt",
+      "archive_path": "NOTICE.txt",
+      "bytes": 3894,
+      "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90"
+    }
+  ]
+}
