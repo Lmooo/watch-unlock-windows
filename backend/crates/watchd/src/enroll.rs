@@ -167,12 +167,14 @@ pub fn load_credential() -> Option<StoredCredential> {
     (record.version == 1).then_some(record)
 }
 
+const WRONG_PASSWORD: &str = "密码不对：Windows 没有接受这个密码。请填写当前 Windows 账户的登录密码（微软账户就填微软账户密码），不是 PIN 码，注意大小写。";
+
 /// Validate against Windows and require the returned token to have the current user's SID.
 pub fn enroll_password(password: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!password.is_empty() && password.encode_utf16().count() <= 512
         && !password.contains('\0'), "Invalid Windows account password format");
     let (username, domain) = matching_identity(password)
-        .ok_or_else(|| anyhow::anyhow!("Windows rejected the current user's account password; a Hello PIN cannot be used"))?;
+        .ok_or(crate::bridge::Shown(WRONG_PASSWORD))?;
     let record = StoredCredential { version: 1, username, domain, password: password.to_owned() };
     save_credential(&record)?;
     Ok(())

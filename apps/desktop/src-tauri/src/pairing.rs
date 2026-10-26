@@ -120,7 +120,10 @@ pub fn start(app: AppHandle, processes: &Processes) -> Result<(), String> {
                 remaining_seconds: 0, reason: "native_process_stopped".into(),
             });
         }
-        if error { let _ = app.emit("pairing-error", "pairing_failed"); }
+        // watchd exits non-zero for every failed or cancelled window, but a final "stopped"
+        // event already carries the specific reason; only a window that ended without one
+        // (crash, bad output, timeout) needs the generic error.
+        if error && !terminal.load(Ordering::SeqCst) { let _ = app.emit("pairing-error", "pairing_failed"); }
     });
     Ok(())
 }

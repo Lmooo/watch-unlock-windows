@@ -154,6 +154,9 @@ function bind(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-edit]").forEach((b) => {
     b.onclick = () => showDevice(b.dataset.edit);
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((b) => {
+    b.onclick = () => removeDevice(b.dataset.remove || "");
+  });
   bindScanRows();
   bindPairedRows();
   document.querySelector<HTMLButtonElement>("#scan-toggle")?.addEventListener(
@@ -474,16 +477,21 @@ function showDevice(id?: string, name?: string | null): void {
     });
   dialog.querySelector<HTMLButtonElement>("#remove-device")?.addEventListener(
     "click",
-    () =>
-      void act(async () => {
-        if (!confirm("移除此设备及其保存的身份材料？")) return;
-        await bridge.request({ op: "remove_device", id });
-        dialog.close();
-        await refresh();
-        render();
-        toast("设备已移除。");
-      }),
+    () => removeDevice(id || "", dialog),
   );
+}
+
+function removeDevice(id: string, dialog?: HTMLDialogElement): void {
+  const device = data.devices.find((d) => d.id === id);
+  if (!device) return;
+  void act(async () => {
+    if (!confirm(`移除「${device.name}」及其保存的身份材料？移除后要重新绑定才能解锁。`)) return;
+    await bridge.request({ op: "remove_device", id });
+    dialog?.close();
+    await refresh();
+    render();
+    toast("设备已移除。");
+  });
 }
 
 function saveCredential(event: SubmitEvent): void {
@@ -554,7 +562,7 @@ function receive(advertisement: Advertisement): void {
     if (count) count.textContent = String(observed.length);
   } else if (currentPage() === "overview" || currentPage() === "devices") {
     signals = collectSignals(data, signals, observed);
-    patchLive(data, status, signals, currentPage(), showDevice);
+    patchLive(data, status, signals, currentPage(), showDevice, removeDevice);
   }
 }
 
@@ -610,7 +618,7 @@ await bridge.subscribe(
   () => {
     pairing = false;
     toast(
-      "配对窗口未完成，请检查蓝牙外设能力及后端记录。未把广播或连接认作配对成功。",
+      "配对进程意外结束，请重试。仍然失败的话，在「解锁记录」页点「导出诊断信息」，把文件发给开发者。",
     );
   },
 );
@@ -621,7 +629,7 @@ if (bridge.native)
     refreshing = true;
     void refresh()
       .then(() => {
-        patchLive(data, status, signals, currentPage(), showDevice);
+        patchLive(data, status, signals, currentPage(), showDevice, removeDevice);
         renderBanner();
       })
       .finally(() => {

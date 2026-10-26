@@ -42,14 +42,29 @@ export function signalValue(observed?: Signal): string {
   return `${observed ? escape(observed.rssi) : "—"}<small>dBm</small><span>${observed ? `更新于 ${escape(new Date(observed.lastSeen).toLocaleTimeString("zh-CN", { hour12: false }))}` : "尚无实时信号"}</span>`;
 }
 
-export function deviceCard(device: Device, observed?: Signal): string {
+/** What still stands between this watch and an unlock, in the order the user has to fix it. */
+export function deviceReadiness(device: Device, data: Snapshot, observed?: Signal): { ok: boolean; badge: string; text: string } {
+  if (!device.enabled) return { ok: false, badge: "已停用", text: "已停用，不参与解锁。可在「配置」里重新启用。" };
+  if (!device.identity_configured) return { ok: false, badge: "未绑定", text: "还没保存这块手表的身份密钥，请到「附近扫描」绑定。" };
+  if (!data.credential_configured) return { ok: false, badge: "缺密码", text: "还没保存 Windows 账户密码，请在「我的设备」页下方填写。" };
+  if (!data.backend_running) return { ok: false, badge: "后台未运行", text: "后台没有运行，不会解锁。请在「概览」点「启动后台」。" };
+  if (!observed) return { ok: false, badge: "未收到信号", text: "设置齐全，但后台还没认出这块手表。戴着手表靠近电脑，几秒内应出现信号。" };
+  return { ok: true, badge: "可以解锁", text: "一切就绪：锁屏后走远再回来就会解锁。" };
+}
+
+export function readinessHtml(device: Device, data: Snapshot, observed?: Signal): string {
+  const ready = deviceReadiness(device, data, observed);
+  return `<div class="device-head"><div class="watch-icon">${icon("devices")}</div><span class="badge ${ready.ok ? "green" : device.enabled ? "warn" : ""}">${ready.badge}</span></div>
+    <h3>${escape(device.name)}</h3><p class="muted">${ready.text}</p>`;
+}
+
+export function deviceCard(device: Device, data: Snapshot, observed?: Signal): string {
   return `<article class="device-card" data-device-id="${escape(device.id)}">
-    <div class="device-head"><div class="watch-icon">${icon("devices")}</div><span class="badge ${device.enabled ? "green" : ""}">${device.enabled ? "已启用" : "已停用"}</span></div>
-    <h3>${escape(device.name)}</h3><p class="muted">Apple BLE · ${device.identity_configured ? "身份材料已保存" : "待登记身份材料"}</p>
+    <div class="card-ready">${readinessHtml(device, data, observed)}</div>
     <div class="signal-value">${signalValue(observed)}</div>
     <div class="signal-chart">${sparkline(observed?.samples || [])}</div>
     <div class="card-meta"><span>靠近 <strong>${device.near_rssi} dBm</strong></span><span>远离 <strong>${device.far_rssi} dBm</strong></span></div>
-    <div class="card-footer"><span>${device.auto_unlock_on_return ? "无感解锁" : "返回后动键鼠解锁"}</span><button class="text-button" data-edit="${escape(device.id)}">配置 ${icon("arrow")}</button></div>
+    <div class="card-footer"><span>${device.auto_unlock_on_return ? "无感解锁" : "返回后动键鼠解锁"}</span><span class="card-actions"><button class="text-button danger" data-remove="${escape(device.id)}">移除</button><button class="text-button" data-edit="${escape(device.id)}">配置 ${icon("arrow")}</button></span></div>
   </article>`;
 }
 
@@ -213,6 +228,7 @@ export function overview(
             .map((d) =>
               deviceCard(
                 d,
+                data,
                 observed.find((o) => o.deviceId === d.id),
               ),
             )
@@ -343,6 +359,7 @@ export function devicesPage(data: Snapshot, observed: DeviceSignal[]): string {
         .map((d) =>
           deviceCard(
             d,
+            data,
             observed.find((o) => o.deviceId === d.id),
           ),
         )

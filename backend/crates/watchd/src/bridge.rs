@@ -20,6 +20,22 @@ impl Drop for Request {
     }
 }
 
+/// A fixed user-facing message that carries no input, so the UI may show it as it is.
+#[derive(Debug)]
+pub struct Shown(pub &'static str);
+impl std::fmt::Display for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+}
+impl std::error::Error for Shown {}
+
+// Library errors can carry input. Keep the external error stable and redacted; only fixed
+// messages, which carry no input, are shown as they are.
+fn error_text(error: &anyhow::Error) -> String {
+    if let Some(failure) = error.downcast_ref::<crate::notify::Failure>() { return failure.to_string(); }
+    if let Some(shown) = error.downcast_ref::<Shown>() { return shown.0.to_owned(); }
+    "操作失败，请检查参数、账户密码、配对身份或应用目录权限。".to_owned()
+}
+
 pub fn run() -> Result<()> {
     let result = (|| -> Result<Value> {
         let mut bytes = Vec::new();
@@ -32,12 +48,7 @@ pub fn run() -> Result<()> {
     })();
     let response = match result {
         Ok(data) => json!({"ok":true,"data":data}),
-        // Library errors can carry input. Keep the external error stable and redacted; only the
-        // fixed notification categories, which carry no input, are shown as they are.
-        Err(error) => match error.downcast_ref::<crate::notify::Failure>() {
-            Some(failure) => json!({"ok":false,"error":failure.to_string()}),
-            None => json!({"ok":false,"error":"操作失败，请检查参数、账户密码、配对身份或应用目录权限。"}),
-        },
+        Err(error) => json!({"ok":false,"error":error_text(&error)}),
     };
     println!("{}", serde_json::to_string(&response)?);
     std::io::stdout().flush()?;
@@ -217,6 +228,14 @@ fn save_notifications(request: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_fixed_messages_reach_the_ui() {
+        assert!(error_text(&anyhow::Error::new(Shown("密码不对"))).starts_with("密码不对"));
+        let wrapped = anyhow::Error::new(Shown("密码不对")).context("Save credential");
+        assert!(error_text(&wrapped).starts_with("密码不对"));
+        assert!(error_text(&anyhow::anyhow!("secret input")).starts_with("操作失败"));
+    }
 
     #[test]
     fn notification_validation_finishes_before_storage() {

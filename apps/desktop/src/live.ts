@@ -1,4 +1,4 @@
-import { backendLabel, deviceCard, historyTable, signalValue, sparkline } from "./render";
+import { backendLabel, deviceCard, historyTable, readinessHtml, signalValue, sparkline } from "./render";
 import type {
   DeviceSignal,
   ObservedDevice,
@@ -45,6 +45,7 @@ export function patchLive(
   signals: DeviceSignal[],
   page: Page,
   onEdit: (id?: string) => void,
+  onRemove: (id: string) => void,
 ): void {
   const button = document.querySelector<HTMLButtonElement>("#daemon-toggle");
   const label = backendLabel(data, status);
@@ -75,12 +76,16 @@ export function patchLive(
         .map((d) =>
           deviceCard(
             d,
+            data,
             signals.find((s) => s.deviceId === d.id),
           ),
         )
         .join("");
       cards.querySelectorAll<HTMLButtonElement>("[data-edit]").forEach((b) => {
         b.onclick = () => onEdit(b.dataset.edit);
+      });
+      cards.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((b) => {
+        b.onclick = () => onRemove(b.dataset.remove || "");
       });
     } else {
       cards
@@ -89,6 +94,9 @@ export function patchLive(
           const signal = signals.find(
             (s) => s.deviceId === card.dataset.deviceId,
           );
+          const device = data.devices.find((d) => d.id === card.dataset.deviceId);
+          const ready = card.querySelector<HTMLElement>(".card-ready");
+          if (device && ready) ready.innerHTML = readinessHtml(device, data, signal);
           const value = card.querySelector<HTMLElement>(".signal-value");
           const chart = card.querySelector<HTMLElement>(".signal-chart");
           if (value) value.innerHTML = signalValue(signal);

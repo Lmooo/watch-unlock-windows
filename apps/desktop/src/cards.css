@@ -107,7 +107,11 @@
 .device-card h3 {
   font-size: 16px;
 }
-.device-card > p {
+.badge.warn {
+  color: var(--warn-text);
+  background: var(--warn-soft);
+}
+.card-ready p {
   font-size: 12px;
   margin-top: 7px;
 }
@@ -183,6 +187,10 @@
   font-size: 12px;
   color: var(--faint);
   padding: 13px 0;
+}
+.card-actions {
+  display: inline-flex;
+  gap: 16px;
 }
 .text-button {
   display: inline-flex;
