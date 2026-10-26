@@ -12,8 +12,14 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
 function Invoke-Native([string]$Executable, [string[]]$Arguments) {
-    & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$Executable $($Arguments -join ' ') failed (exit code $LASTEXITCODE)" }
+    # git and gh report progress on stderr, which Windows PowerShell turns into errors.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Executable @Arguments 2>&1 | ForEach-Object { $_.ToString() } | Out-Host
+        $exitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($exitCode -ne 0) { throw "$Executable $($Arguments -join ' ') failed (exit code $exitCode)" }
 }
 
 Push-Location $projectRoot
