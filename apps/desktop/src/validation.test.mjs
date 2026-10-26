@@ -30,4 +30,7 @@ test("notification validation rejects unsafe URLs and malformed Bark keys", () =
     assert.throws(() => validateNotifications(endpoint, ""));
   assert.throws(() => validateNotifications("https://example.invalid", "short"));
   assert.throws(() => validateNotifications("https://example.invalid", "has space in it"));
+  // A pasted sample URL gets the "key only" explanation, not the generic format message.
+  assert.throws(() => validateNotifications("https://example.invalid", "https://api.day.app/YourKey123/hello"), /不要填整个网址/);
+  assert.throws(() => validateNotifications("https://example.invalid", "api.day.app/YourKey123"), /不要填整个网址/);
 });

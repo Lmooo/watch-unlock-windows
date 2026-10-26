@@ -37,6 +37,9 @@ function validateHttps(value: string): void {
 
 export function validateNotifications(endpoint: string, barkKey: string): void {
   validateHttps(endpoint);
+  // The usual mistake is pasting the whole sample URL from the Bark app instead of its key.
+  if (barkKey && /[/:.]/.test(barkKey))
+    throw new Error("只填 Bark 网址中域名后面的那一段密钥，不要填整个网址。例如 https://api.day.app/YourKey123/推送内容 里填 YourKey123。");
   if (barkKey && !/^[A-Za-z0-9_-]{8,256}$/.test(barkKey))
-    throw new Error("Bark 密钥应为 8 至 256 位字母、数字、下划线或连字符。");
+    throw new Error("Bark 密钥应为 8 至 256 位字母、数字、下划线或连字符，不含空格。");
 }
