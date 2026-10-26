@@ -1,7 +1,8 @@
 //! User-initiated Windows pairing window. No PairAsync/automatic acceptance or key export.
 
+use std::borrow::Cow;
 use std::io::{BufRead, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,8 @@ use windows::Devices::Bluetooth::{BluetoothAdapter, BluetoothError, BluetoothLED
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristicProperties, GattLocalCharacteristic, GattLocalCharacteristicParameters,
     GattProtectionLevel, GattReadRequest, GattReadRequestedEventArgs, GattServiceProvider,
-    GattServiceProviderAdvertisementStatus, GattServiceProviderAdvertisingParameters, GattSession,
+    GattServiceProviderAdvertisementStatus, GattServiceProviderAdvertisementStatusChangedEventArgs,
+    GattServiceProviderAdvertisingParameters, GattSession,
 };
 use windows::Devices::Radios::RadioState;
 use windows::Foundation::{AsyncOperationCompletedHandler, AsyncStatus, EventRegistrationToken,
@@ -66,6 +68,12 @@ struct Snapshot {
     subscriptions: u32,
     encrypted_reads: u32,
     remaining_seconds: u64,
+    /// Seconds the advertisement was fully running, and how it went, for the history line.
+    advertised_seconds: u64,
+    limited: bool,
+    restarts: u32,
+    advertising_error: i32,
+    advertising_opened: bool,
 }
 
 struct Apartment;
@@ -128,12 +136,15 @@ struct ReadState {
     in_flight: AtomicU32,
     count: AtomicU32,
     session: Mutex<Option<GattSession>>,
+    /// The BluetoothError Windows gave with the last advertisement status change.
+    advertising_error: AtomicI32,
 }
 
 struct PairingWindow {
     provider: GattServiceProvider,
     measurement: GattLocalCharacteristic,
     read_token: Option<EventRegistrationToken>,
+    status_token: Option<EventRegistrationToken>,
     reads: Arc<ReadState>,
 }
 
@@ -143,6 +154,9 @@ impl Drop for PairingWindow {
         let _ = self.provider.StopAdvertising();
         if let Some(token) = self.read_token.take() {
             let _ = self.measurement.RemoveReadRequested(token);
+        }
+        if let Some(token) = self.status_token.take() {
+            let _ = self.provider.RemoveAdvertisementStatusChanged(token);
         }
     }
 }
@@ -205,8 +219,17 @@ fn create_window(end: Instant) -> Result<PairingWindow> {
     let result = wait(provider.Service()?.CreateCharacteristicAsync(bluetooth_uuid(0x2a37), &measurement)?, operation_deadline(end, 15))?;
     ensure!(result.Error()? == BluetoothError::Success, "Pairing characteristic unavailable");
     let reads = Arc::new(ReadState::default());
-    let mut window = PairingWindow { provider, measurement: result.Characteristic()?, read_token: None, reads };
+    let mut window = PairingWindow { provider, measurement: result.Characteristic()?, read_token: None, status_token: None, reads };
     window.read_token = Some(window.measurement.ReadRequested(&read_handler(window.reads.clone()))?);
+    let status = window.reads.clone();
+    // Only feeds the failure reason, so a system that refuses the subscription still pairs.
+    window.status_token = window.provider.AdvertisementStatusChanged(&TypedEventHandler::new(
+        move |_, arguments: &Option<GattServiceProviderAdvertisementStatusChangedEventArgs>| {
+            if let Some(error) = arguments.as_ref().and_then(|arguments| arguments.Error().ok()) {
+                status.advertising_error.store(error.0, Ordering::Release);
+            }
+            Ok(())
+        })).ok();
     let writer = DataWriter::new()?;
     writer.WriteByte(0)?; // Body Sensor Location: Other. This is not a heart-rate value.
     let location = GattLocalCharacteristicParameters::new()?;
@@ -252,6 +275,19 @@ impl std::error::Error for Unavailable {}
 
 fn unavailable(reason: &'static str) -> anyhow::Error { Unavailable(reason).into() }
 
+const ADVERTISING_RESTARTS: u32 = 3;
+const ABORT_BEFORE_START: Duration = Duration::from_secs(15);
+const ABORT_AFTER_START: Duration = Duration::from_secs(3);
+
+fn open_window(end: Instant, discoverable: bool) -> Result<PairingWindow> {
+    let window = create_window(end).map_err(|_| unavailable("service_failed"))?;
+    let parameters = GattServiceProviderAdvertisingParameters::new()?;
+    parameters.SetIsConnectable(true)?;
+    parameters.SetIsDiscoverable(discoverable)?;
+    window.provider.StartAdvertisingWithParameters(&parameters).map_err(|_| unavailable("service_failed"))?;
+    Ok(window)
+}
+
 fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
     let end = Instant::now() + Duration::from_secs(seconds);
     unsafe { RoInitialize(RO_INIT_MULTITHREADED)?; }
@@ -264,12 +300,13 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
     if radio.State()? != RadioState::On { return Err(unavailable("radio_off")); }
     if !adapter.IsLowEnergySupported()? { return Err(unavailable("le_unsupported")); }
     if !adapter.IsPeripheralRoleSupported()? { return Err(unavailable("peripheral_unsupported")); }
-    let window = create_window(end).map_err(|_| unavailable("service_failed"))?;
-    let parameters = GattServiceProviderAdvertisingParameters::new()?;
-    parameters.SetIsConnectable(true)?;
-    parameters.SetIsDiscoverable(true)?;
-    window.provider.StartAdvertisingWithParameters(&parameters).map_err(|_| unavailable("service_failed"))?;
+    let mut window = open_window(end, true)?;
+    state.advertising_opened = true;
+    let mut restarts = 0;
     let mut started = false;
+    // Whether the current advertisement has run; a rebuilt one gets the startup allowance again.
+    let mut live = false;
+    let mut next_tally = Instant::now();
     let mut next_report = Instant::now();
     let mut next_verify = Instant::now();
     let mut aborted_since: Option<Instant> = None;
@@ -285,10 +322,35 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
         state.subscriptions = clients.Size()?;
         if status == GattServiceProviderAdvertisementStatus::Aborted {
             let since = *aborted_since.get_or_insert(now);
-            if now.duration_since(since) >= Duration::from_secs(3) { return Err(unavailable("advertising_aborted")); }
+            // Windows reports Aborted while a new advertisement is still starting, briefly on fast
+            // adapters and for seconds on slow ones. Only a drop after it ran gets the short limit.
+            let limit = if live { ABORT_AFTER_START } else { ABORT_BEFORE_START };
+            if now.duration_since(since) >= limit {
+                // Some adapters abort the first advertisement and accept a fresh one. Rebuild the
+                // service; the last try leaves out the discoverable flag, which some drivers reject.
+                if restarts >= ADVERTISING_RESTARTS {
+                    return Err(unavailable(abort_reason(BluetoothError(window.reads.advertising_error.load(Ordering::Acquire)))));
+                }
+                restarts += 1;
+                drop(window);
+                std::thread::sleep(Duration::from_millis(500));
+                window = open_window(end, restarts < ADVERTISING_RESTARTS)?;
+                aborted_since = None;
+                live = false;
+                continue;
+            }
         } else { aborted_since = None; }
-        if matches!(status, GattServiceProviderAdvertisementStatus::Started | GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData)
-            && !started {
+        let running = matches!(status, GattServiceProviderAdvertisementStatus::Started
+            | GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData);
+        live |= running;
+        state.limited |= status == GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData;
+        if status == GattServiceProviderAdvertisementStatus::Started && now >= next_tally {
+            state.advertised_seconds += 1;
+            next_tally = now + Duration::from_secs(1);
+        }
+        state.restarts = restarts;
+        state.advertising_error = window.reads.advertising_error.load(Ordering::Acquire);
+        if running && !started {
             started = true;
             emit(event("started", state, "user_confirmation_required"));
         }
@@ -313,15 +375,15 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
 
 /// Advertise only in response to an explicit pairing action, for at most 120 seconds.
 /// Read-only Bluetooth facts for the diagnostics report: the same checks as the pairing preflight.
-pub fn bluetooth_report() -> Vec<(&'static str, &'static str)> {
+pub fn bluetooth_report() -> Vec<(&'static str, Cow<'static, str>)> {
     fn answer(value: windows::core::Result<bool>) -> &'static str {
         match value { Ok(true) => "是", Ok(false) => "否", Err(_) => "无法读取" }
     }
     let deadline = Instant::now() + Duration::from_secs(10);
-    if unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_err() { return vec![("蓝牙", "无法读取")]; }
+    if unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_err() { return vec![("蓝牙", "无法读取".into())]; }
     let _apartment = Apartment;
     let Some(adapter) = BluetoothAdapter::GetDefaultAsync().ok().and_then(|operation| wait(operation, deadline).ok()) else {
-        return vec![("蓝牙适配器", "没有找到")];
+        return vec![("蓝牙适配器", "没有找到".into())];
     };
     let radio = adapter.GetRadioAsync().ok().and_then(|operation| wait(operation, deadline).ok())
         .and_then(|radio| radio.State().ok());
@@ -332,13 +394,60 @@ pub fn bluetooth_report() -> Vec<(&'static str, &'static str)> {
         Some(_) => "未知",
         None => "无法读取",
     };
+    let hardware = adapter.DeviceId().ok().and_then(|id| hardware_id(&id.to_string_lossy()));
     vec![
-        ("蓝牙适配器", "已找到"),
-        ("蓝牙开关", radio),
-        ("低功耗蓝牙", answer(adapter.IsLowEnergySupported())),
-        ("外设模式（配对需要）", answer(adapter.IsPeripheralRoleSupported())),
-        ("中心模式（扫描需要）", answer(adapter.IsCentralRoleSupported())),
+        ("蓝牙适配器", "已找到".into()),
+        ("适配器硬件", hardware.map_or("无法读取".into(), Cow::Owned)),
+        ("蓝牙开关", radio.into()),
+        ("低功耗蓝牙", answer(adapter.IsLowEnergySupported()).into()),
+        ("外设模式（配对需要）", answer(adapter.IsPeripheralRoleSupported()).into()),
+        ("中心模式（扫描需要）", answer(adapter.IsCentralRoleSupported()).into()),
     ]
+}
+
+/// One history line on how the advertisement went: the watch can only find a PC whose full
+/// heart-rate advertisement is on air. Built from counts and fixed labels only.
+fn advertising_summary(state: &Snapshot) -> String {
+    let error = match BluetoothError(state.advertising_error) {
+        BluetoothError::Success => "无",
+        BluetoothError::RadioNotAvailable => "蓝牙不可用",
+        BluetoothError::ResourceInUse => "资源被占用",
+        BluetoothError::NotSupported => "不支持",
+        BluetoothError::TransportNotSupported => "传输方式不支持",
+        BluetoothError::DisabledByPolicy => "被策略禁止",
+        BluetoothError::DisabledByUser => "被用户关闭",
+        BluetoothError::ConsentRequired => "需要授权",
+        BluetoothError::DeviceNotConnected => "设备未连接",
+        _ => "其他错误",
+    };
+    format!("配对广播：完整广播 {} 秒{}，重建 {} 次，Windows 报告的错误：{}",
+        state.advertised_seconds,
+        if state.limited { "，曾出现广播内容不完整（手表可能认不出）" } else { "" },
+        state.restarts, error)
+}
+
+/// Windows names why it stopped an advertisement; turn that into a reason the user can act on.
+fn abort_reason(error: BluetoothError) -> &'static str {
+    match error {
+        BluetoothError::RadioNotAvailable => "radio_off",
+        BluetoothError::ResourceInUse => "advertising_busy",
+        BluetoothError::NotSupported | BluetoothError::TransportNotSupported => "peripheral_unsupported",
+        BluetoothError::DisabledByPolicy | BluetoothError::DisabledByUser | BluetoothError::ConsentRequired => "advertising_blocked",
+        _ => "advertising_aborted",
+    }
+}
+
+/// Bus and vendor/product IDs from an adapter interface path such as
+/// `\\?\USB#VID_8087&PID_0026#5&1a2b#{...}`: they name the chip and driver family that
+/// matter for advertising. The instance part, which can identify this machine, is dropped.
+fn hardware_id(interface: &str) -> Option<String> {
+    let mut parts = interface.trim_start_matches(r"\\?\").split('#');
+    let bus = parts.next()?;
+    let ids = parts.next()?;
+    let plain = |part: &str| !part.is_empty() && part.len() <= 48
+        && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'&' || b == b'_');
+    (plain(bus) && plain(ids) && (ids.contains("VID_") || ids.contains("VEN_")))
+        .then(|| format!("{bus} {ids}"))
 }
 
 /// History line for a closed pairing window. Fixed text only; a cancelled window is not recorded.
@@ -350,7 +459,9 @@ fn outcome_detail(paired: bool, reason: &str, watch_connected: bool) -> Option<(
         "le_unsupported" => "配对未完成：蓝牙不支持低功耗蓝牙",
         "peripheral_unsupported" => "配对未完成：蓝牙适配器不支持外设模式",
         "service_failed" => "配对未完成：无法开启配对服务",
-        "advertising_aborted" => "配对未完成：配对广播被系统中断",
+        "advertising_aborted" => "配对未完成：配对广播被系统中断（已自动重试 3 次）",
+        "advertising_busy" => "配对未完成：蓝牙广播被其他程序或系统功能占用（已自动重试 3 次）",
+        "advertising_blocked" => "配对未完成：蓝牙广播被系统策略或隐私设置禁止",
         "timeout" if watch_connected => "配对未完成：手表已连接，但 Windows 没有确认配对（可能漏点了配对通知）",
         "timeout" => "配对未完成：配对窗口内手表没有连接这台电脑",
         "cancelled" => return None,
@@ -382,12 +493,43 @@ pub fn run(seconds: u64) -> Result<()> {
     if let Some((name, detail)) = outcome_detail(state.paired, reason, watch_connected) {
         crate::audit::record(name, None, detail);
     }
+    if state.advertising_opened {
+        crate::audit::record("pairing_advertising", None, &advertising_summary(&state));
+    }
     result.map(|_| ()).map_err(|_| anyhow::anyhow!("Pairing window unavailable; check Bluetooth and BLE peripheral support"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertising_summary_uses_counts_and_fixed_labels() {
+        let state = Snapshot { advertised_seconds: 0, limited: true, restarts: 3,
+            advertising_error: BluetoothError::ResourceInUse.0, ..Default::default() };
+        assert_eq!(advertising_summary(&state),
+            "配对广播：完整广播 0 秒，曾出现广播内容不完整（手表可能认不出），重建 3 次，Windows 报告的错误：资源被占用");
+    }
+
+    #[test]
+    fn advertising_errors_name_an_actionable_reason() {
+        assert_eq!(abort_reason(BluetoothError::ResourceInUse), "advertising_busy");
+        assert_eq!(abort_reason(BluetoothError::RadioNotAvailable), "radio_off");
+        assert_eq!(abort_reason(BluetoothError::DisabledByPolicy), "advertising_blocked");
+        assert_eq!(abort_reason(BluetoothError::Success), "advertising_aborted");
+        for reason in ["advertising_busy", "advertising_blocked"] {
+            assert!(outcome_detail(false, reason, false).is_some_and(|o| !o.1.ends_with("无法开启")));
+        }
+    }
+
+    #[test]
+    fn hardware_id_keeps_vendor_and_product_only() {
+        assert_eq!(hardware_id(r"\\?\USB#VID_8087&PID_0026#5&2b4c1a&0&10#{92383b0e-f90e-4ac9-8d44-8c2d0d0ebda2}").as_deref(),
+            Some("USB VID_8087&PID_0026"));
+        assert_eq!(hardware_id(r"\\?\PCI#VEN_14E4&DEV_43A0#4&1234#{x}").as_deref(), Some("PCI VEN_14E4&DEV_43A0"));
+        assert_eq!(hardware_id(r"\\?\BTHENUM#{0000}_LOCALMFG#7&1"), None);
+        assert_eq!(hardware_id("garbage"), None);
+    }
 
     #[test]
     fn closed_windows_are_recorded_except_when_cancelled() {

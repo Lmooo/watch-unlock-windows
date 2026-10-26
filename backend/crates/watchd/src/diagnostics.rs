@@ -34,7 +34,7 @@ pub fn report() -> Result<Value> {
     status(&mut text, now, &devices);
 
     section(&mut text, "蓝牙");
-    for (name, value) in crate::pairing::bluetooth_report() { line(&mut text, name, value); }
+    for (name, value) in crate::pairing::bluetooth_report() { line(&mut text, name, &value); }
 
     section(&mut text, &format!("我的设备（{} 块）", devices.len()));
     for device in &devices {
@@ -148,6 +148,7 @@ fn windows_version() -> String {
     let build = registry_string(key, w!("CurrentBuild")).unwrap_or_default();
     let update = registry_dword(key, w!("UBR")).map(|value| format!(".{value}")).unwrap_or_default();
     // ProductName still says "Windows 10" on Windows 11; the build number tells them apart.
+    let name = if build.parse::<u32>().is_ok_and(|build| build >= 22000) { name.replacen("Windows 10", "Windows 11", 1) } else { name };
     format!("{name} {release}（版本号 {build}{update}）")
 }
 
