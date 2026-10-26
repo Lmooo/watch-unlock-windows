@@ -1,11 +1,15 @@
 //! "Export diagnostics": one text file in Downloads that a user can send for support, shown
-//! selected in File Explorer. The backend part holds no secrets; see watchd's diagnostics.rs.
+//! selected in File Explorer. "Copy diagnostics" gives a short version for a chat message.
+//! The backend part holds no secrets; see watchd's diagnostics.rs.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::json;
 use tauri::{AppHandle, Manager};
+
+/// Events kept in the copied summary; enough to cover the last pairing or unlock attempt.
+const BRIEF_EVENTS: usize = 30;
 
 #[tauri::command]
 pub async fn export_diagnostics(app: AppHandle) -> Result<String, String> {
@@ -16,7 +20,27 @@ pub async fn export_diagnostics(app: AppHandle) -> Result<String, String> {
         .map_err(|_| "diagnostics_task_failed")?
 }
 
+#[tauri::command]
+pub async fn diagnostics_summary(app: AppHandle) -> Result<String, String> {
+    let version = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || brief(&compose(&version).1))
+        .await
+        .map_err(|_| "diagnostics_task_failed".into())
+}
+
 fn export(version: &str, downloads: &Path) -> Result<String, String> {
+    let (stamp, text) = compose(version);
+    let path = target(downloads, &stamp);
+    // A BOM keeps Chinese readable in editors that would otherwise guess a legacy code page.
+    let mut bytes = "\u{feff}".as_bytes().to_vec();
+    bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes());
+    std::fs::write(&path, bytes).map_err(|_| "diagnostics_write_failed")?;
+    reveal(&path);
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// The full report and the stamp for its file name.
+fn compose(version: &str) -> (String, String) {
     let (stamp, body) = match crate::backend::request(json!({"op":"diagnostics"})) {
         Ok(response) if response["ok"] == true => (
             response["data"]["stamp"].as_str().filter(|s| valid_stamp(s)).map(str::to_owned),
@@ -29,13 +53,18 @@ fn export(version: &str, downloads: &Path) -> Result<String, String> {
     let stamp = stamp.unwrap_or_else(fallback_stamp);
     let text = format!("Watch Unlock 诊断信息\n本文件不含密码、密钥、电脑名和设备名；设备按顺序记为「设备 1」「设备 2」。\n\n== 应用 ==\n版本：{version}\n{}{body}",
         crate::setup::report_lines());
-    let path = target(downloads, &stamp);
-    // A BOM keeps Chinese readable in editors that would otherwise guess a legacy code page.
-    let mut bytes = "\u{feff}".as_bytes().to_vec();
-    bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes());
-    std::fs::write(&path, bytes).map_err(|_| "diagnostics_write_failed")?;
-    reveal(&path);
-    Ok(path.to_string_lossy().into_owned())
+    (stamp, text)
+}
+
+/// Drops the supervisor log and all but the last events, which is what makes the full report long.
+fn brief(text: &str) -> String {
+    let text = text.split("\n== 后台守护日志").next().unwrap_or(text);
+    let Some(start) = text.find("\n== 最近事件") else { return text.trim_end().to_owned() };
+    let (head, events) = text.split_at(start);
+    let events: Vec<&str> = events.lines().skip(2).filter(|line| !line.trim().is_empty()).collect();
+    let kept = &events[events.len().saturating_sub(BRIEF_EVENTS)..];
+    format!("{}\n\n== 最近 {} 条事件（共 {} 条；完整内容请在「解锁记录」导出诊断信息） ==\n{}",
+        head.trim_end(), kept.len(), events.len(), kept.join("\n"))
 }
 
 fn valid_stamp(stamp: &str) -> bool {
@@ -79,6 +108,17 @@ mod tests {
         assert!(valid_stamp("20261026-172223"));
         assert!(!valid_stamp("2026102617222"));
         assert!(!valid_stamp("..\\..\\x-172223"));
+    }
+
+    #[test]
+    fn summary_keeps_status_and_only_recent_events() {
+        let events: String = (1..=40).map(|n| format!("2026-10-26 10:00:{n:02}  e{n}  —  x\n")).collect();
+        let text = format!("头\n\n== 蓝牙 ==\n外设模式：是\n\n== 最近事件（最多 500 条，按时间顺序） ==\n{events}\n== 后台守护日志（最后 200 行） ==\nsupervisor_started\n");
+        let summary = brief(&text);
+        assert!(summary.contains("外设模式：是"));
+        assert!(summary.contains("最近 30 条事件（共 40 条"));
+        assert!(summary.contains("  e40  ") && summary.contains("  e11  ") && !summary.contains("  e10  "));
+        assert!(!summary.contains("supervisor_started") && !summary.contains("最多 500 条"));
     }
 
     #[test]

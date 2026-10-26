@@ -76,7 +76,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             backend_request, runtime_status, start_daemon, stop_daemon, start_scan, stop_scan,
             start_pairing, stop_pairing
-            , links::open_link, setup::setup_status, setup::set_autostart, diagnostics::export_diagnostics
+            , links::open_link, setup::setup_status, setup::set_autostart, diagnostics::export_diagnostics,
+            diagnostics::diagnostics_summary
         ])
         .run(tauri::generate_context!())
         .expect("Unable to launch Watch Unlock desktop");

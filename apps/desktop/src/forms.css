@@ -63,6 +63,17 @@ input:not([type="checkbox"], [type="hidden"]), select {
   font-size: 14px;
   min-width: 0;
 }
+.diagnostics-text {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-strong);
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  resize: vertical;
+}
 [hidden] {
   display: none !important;
 }
@@ -98,6 +109,20 @@ input[type="checkbox"] {
   height: 1px;
   background: var(--primary-tint);
   margin: 30px 0;
+}
+.saved-secret {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: var(--primary-tint);
+  color: var(--primary-strong);
+  font-size: 13px;
+  line-height: 1.7;
 }
 .form-hint {
   font-size: 13px;

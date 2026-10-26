@@ -5,6 +5,7 @@ import { collectSignals, patchLive } from "./live";
 import { validateDevice, validateNotifications, validatePassword } from "./validation";
 import {
   devicesPage,
+  escape,
   historyPage,
   notificationsPage,
   overview,
@@ -51,6 +52,13 @@ let passwordFocusPending = false;
 /** A watch was bound after the current pairing window opened. */
 let boundThisPairing = false;
 let version = "";
+/** An update found at start; the sidebar button then opens it instead of the changelog. */
+let pendingUpdate: Awaited<ReturnType<typeof findUpdate>> = null;
+const seenKey = "watch-unlock.changelog-seen";
+
+function changelogSeen(): boolean {
+  try { return localStorage.getItem(seenKey) === version; } catch { return true; }
+}
 let binding = false;
 let historyFilter: HistoryFilter = "all";
 
@@ -129,11 +137,26 @@ function render(): void {
   bind();
 }
 
-function bind(): void {
+function bindChangelog(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-changelog]").forEach((button) => {
-    if (version) button.textContent = `v${version} · 更新记录`;
-    button.onclick = () => void showChangelog(toast);
+    const text = button.querySelector<HTMLElement>(".version-text");
+    const dot = button.querySelector<HTMLElement>(".version-dot");
+    if (text && pendingUpdate) text.textContent = `有新版本 v${pendingUpdate.version}`;
+    else if (text && version) text.textContent = `v${version} · 更新记录`;
+    // A dot until this version's notes are opened, or while an update waits.
+    if (dot) dot.hidden = !pendingUpdate && (!version || changelogSeen());
+    button.classList.toggle("has-update", !!pendingUpdate);
+    button.onclick = () => {
+      if (pendingUpdate) { showUpdate(pendingUpdate, toast); return; }
+      try { localStorage.setItem(seenKey, version); } catch { /* the dot just stays */ }
+      if (dot) dot.hidden = true;
+      void showChangelog(toast);
+    };
   });
+}
+
+function bind(): void {
+  bindChangelog();
   document.querySelectorAll<HTMLElement>("[data-link]").forEach((element) => {
     element.onclick = (event) => {
       event.preventDefault();
@@ -222,6 +245,9 @@ function bind(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-goto-password]").forEach((button) => {
     button.onclick = goToPassword;
   });
+  document
+    .querySelector<HTMLButtonElement>("#copy-diagnostics")
+    ?.addEventListener("click", () => void act(copyDiagnostics));
   document
     .querySelector<HTMLButtonElement>("#export-diagnostics")
     ?.addEventListener(
@@ -420,6 +446,36 @@ function goToPassword(): void {
   location.hash = "devices";
 }
 
+/**
+ * The report takes a few seconds; handing the clipboard a pending item keeps the click's user
+ * activation, which a plain writeText after the wait would have lost.
+ */
+async function copyDiagnostics(): Promise<void> {
+  const summary = bridge.diagnosticsSummary();
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/plain": summary.then((text) => new Blob([text], { type: "text/plain" })),
+    })]);
+    toast("诊断信息已复制，直接粘贴到微信等聊天里发给开发者即可。");
+  } catch {
+    // Fall back to a selectable copy the user can take with Ctrl + C.
+    showSummary(await summary);
+  }
+}
+
+function showSummary(text: string): void {
+  const dialog = document.querySelector<HTMLDialogElement>("#info-dialog")!;
+  dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">DIAGNOSTICS</div><h2 id="info-dialog-title">复制诊断信息</h2></div><button type="button" class="close-button" data-close-dialog aria-label="关闭对话框">×</button></div>
+    <p class="form-hint">没能自动复制。下面的内容已全部选中，按 Ctrl + C 复制，再粘贴发给开发者。</p>
+    <textarea class="diagnostics-text" readonly rows="14">${escape(text)}</textarea>
+    <div class="form-actions"><span class="spacer"></span><button type="button" class="button primary" data-close-dialog>关闭</button></div>`;
+  dialog.querySelectorAll<HTMLButtonElement>("[data-close-dialog]").forEach((button) => {
+    button.onclick = () => dialog.close();
+  });
+  dialog.showModal();
+  dialog.querySelector<HTMLTextAreaElement>("textarea")?.select();
+}
+
 function focusPassword(): void {
   const input = document.querySelector<HTMLInputElement>("#windows-password");
   input?.scrollIntoView({ block: "center" });
@@ -594,7 +650,12 @@ version = await appVersion();
 render();
 // Only the installed copy updates itself; a failed check stays silent.
 if (setup?.running_installed)
-  void findUpdate().then((update) => { if (update) showUpdate(update, toast); });
+  void findUpdate().then((update) => {
+    if (!update) return;
+    pendingUpdate = update;
+    bindChangelog();
+    showUpdate(update, toast);
+  });
 void loadPaired().then(rerenderScanPage);
 await bridge.subscribe(
   receive,
@@ -618,7 +679,7 @@ await bridge.subscribe(
   () => {
     pairing = false;
     toast(
-      "配对进程意外结束，请重试。仍然失败的话，在「解锁记录」页点「导出诊断信息」，把文件发给开发者。",
+      "配对进程意外结束，请重试。仍然失败的话，在「解锁记录」页点「复制诊断信息」，粘贴发给开发者。",
     );
   },
 );
