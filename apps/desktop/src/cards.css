@@ -334,6 +334,22 @@ td strong {
   color: var(--muted);
 }
 
+.notice-warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn-text);
+}
+.notice-warn strong {
+  color: var(--warn-text);
+  font-size: 14px;
+}
+.notice-warn p {
+  color: var(--warn-text);
+}
+.notice-warn .button {
+  margin-top: 12px;
+}
+
 .pairing-panel {
   padding: 22px 25px;
   margin-bottom: 22px;

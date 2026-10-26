@@ -103,6 +103,9 @@ const eventNames: Record<string, string> = {
   notification_failed: "通知发送失败",
   configuration_reloaded: "配置重新加载",
   history_cleared: "记录已清空",
+  pairing_completed: "配对完成",
+  pairing_failed: "配对未完成",
+  bind_failed: "绑定未完成",
 };
 
 export const eventName = (code: string): string => eventNames[code] || code;
@@ -113,7 +116,8 @@ const historyGroups: Record<Exclude<HistoryFilter, "all">, string[]> = {
   unlock: ["session_locked", "session_unlocked", "session_reconciled", "far_threshold_crossed",
     "return_detected", "return_authorization_expired", "provider_connected", "display_woke", "lock_screen_input", "unlock_submitted"],
   config: ["device_saved", "device_removed", "credential_saved", "credential_removed",
-    "notifications_saved", "notification_test", "notification_failed", "configuration_reloaded", "history_cleared"],
+    "notifications_saved", "notification_test", "notification_failed", "configuration_reloaded", "history_cleared",
+    "pairing_completed", "pairing_failed", "bind_failed"],
   backend: ["backend_started", "backend_stopped", "scanner_reset", "scanner_unavailable",
     "pipe_client_connected", "pipe_session_mismatch", "pipe_hello_timeout", "pipe_client_dropped",
     "pipe_peer_rejected", "pipe_peer_not_system", "pipe_peer_not_logonui", "pipe_peer_unknown",
@@ -132,8 +136,8 @@ export function historyPage(data: Snapshot, filter: HistoryFilter): string {
   const select = `<label class="inline-select">筛选<select id="history-filter">${options
     .map(([value, label]) => `<option value="${value}" ${value === filter ? "selected" : ""}>${label}</option>`)
     .join("")}</select></label>`;
-  const actions = `${select}<button class="button secondary" id="refresh-history">刷新记录</button><button class="button secondary danger" id="clear-history" ${data.history.length ? "" : "disabled"}>清空记录</button>`;
-  return `${header("ACTIVITY LOG", "每次解锁，都有迹可循", `显示最近 ${data.history.length} 条中的 ${shown.length} 条。记录来自本机后端，不含密码或密钥。`, actions)}<section class="panel" id="activity-content">${historyTable(shown, data.devices)}</section>`;
+  const actions = `${select}<button class="button secondary" id="refresh-history">刷新记录</button><button class="button secondary" id="export-diagnostics">导出诊断信息</button><button class="button secondary danger" id="clear-history" ${data.history.length ? "" : "disabled"}>清空记录</button>`;
+  return `${header("ACTIVITY LOG", "每次解锁，都有迹可循", `显示最近 ${data.history.length} 条中的 ${shown.length} 条。记录来自本机后端，不含密码或密钥。反馈问题时请点「导出诊断信息」，把生成的文件发给开发者；文件不含密码、密钥、电脑名和设备名。`, actions)}<section class="panel" id="activity-content">${historyTable(shown, data.devices)}</section>`;
 }
 
 export function historyTable(
@@ -191,11 +195,15 @@ export function overview(
   observed: DeviceSignal[],
   setup: SetupStatus | null,
 ): string {
-  const ready =
-    data.credential_configured &&
-    data.devices.some((d) => d.enabled && d.identity_configured);
+  const bound = data.devices.some((d) => d.enabled && d.identity_configured);
+  const ready = data.credential_configured && bound;
+  const [title, text] = ready
+    ? ["配置已登记，等待后台验证", "设备与账户密码已就绪。锁屏后走远再回来即可解锁。"]
+    : bound
+      ? ["还差一步：保存 Windows 账户密码", "手表已经绑定，保存账户密码后，走远再回来才能解锁。<button type=\"button\" class=\"text-button\" data-goto-password>去填写密码</button>"]
+      : ["准备好，连接你的第一块手表", "从附近扫描开始，再登记设备身份与 Windows 账户密码。"];
   return `${header("YOUR EVERYDAY CONNECTION", "每一次靠近，都有回应。", "在这里管理设备、查看信号，让解锁保持清晰可控。", '<button class="button primary" id="go-scan">' + icon("plus") + " 添加设备</button>")}
-    <section class="hero"><div><span class="eyebrow" id="backend-state">${data.backend_running ? "后台运行中" : "后台尚未就绪"}</span><h2>${ready ? "配置已登记，等待后台验证" : "准备好，连接你的第一块手表"}</h2><p>${ready ? "设备与账户密码已就绪。锁屏后走远再回来即可解锁。" : "从附近扫描开始，再登记设备身份与 Windows 账户密码。"}</p><div class="hero-actions"><button class="button dark" id="daemon-toggle" ${backendLabel(data, status).disabled ? "disabled" : ""}>${backendLabel(data, status).action}</button><span class="hero-note">${backendLabel(data, status).note}</span></div><label class="toggle-row autostart-toggle"><input type="checkbox" id="autostart" ${setup?.autostart ? "checked" : ""} ${setup?.running_installed ? "" : "disabled"}/><span><strong>登录 Windows 后自动启动后台</strong><small>开机后第一次登录仍需输入密码；之后锁屏即可靠近解锁。</small></span></label></div><div class="hero-logo" aria-hidden="true"></div></section>
+    <section class="hero"><div><span class="eyebrow" id="backend-state">${data.backend_running ? "后台运行中" : "后台尚未就绪"}</span><h2>${title}</h2><p>${text}</p><div class="hero-actions"><button class="button dark" id="daemon-toggle" ${backendLabel(data, status).disabled ? "disabled" : ""}>${backendLabel(data, status).action}</button><span class="hero-note">${backendLabel(data, status).note}</span></div><label class="toggle-row autostart-toggle"><input type="checkbox" id="autostart" ${setup?.autostart ? "checked" : ""} ${setup?.running_installed ? "" : "disabled"}/><span><strong>登录 Windows 后自动启动后台</strong><small>开机后第一次登录仍需输入密码；之后锁屏即可靠近解锁。</small></span></label></div><div class="hero-logo" aria-hidden="true"></div></section>
     <section class="stats-grid"><article class="stat"><span>已登记设备</span><strong>${data.devices.length.toString().padStart(2, "0")}</strong><small>每块设备独立配置阈值</small></article><article class="stat"><span>Windows 凭据</span><strong class="text-stat">${data.credential_configured ? "已保存" : "未设置"}</strong><small>CurrentUser DPAPI 本机加密</small></article><article class="stat"><span>通知通道</span><strong class="text-stat">${data.notifications.configured ? "已配置" : "未配置"}</strong><small>Bark 推送解锁提醒</small></article></section>
     <div class="section-heading"><div><h2>我的设备 <span>${data.devices.length}</span></h2><p>后台运行时每 2 秒更新信号，也可主动扫描附近广播。</p></div><a href="#devices">管理全部 ${icon("arrow")}</a></div>
     ${
@@ -242,22 +250,29 @@ let connectedAtRemaining: number | null = null;
  * A numbered guide. Each step lights up from live counters; none of them is proof of identity,
  * which only the binding step establishes.
  */
-export function pairingPanel(pairing: boolean, state: PairingStatus | null, computerName = ""): string {
+export function pairingPanel(
+  pairing: boolean,
+  state: PairingStatus | null,
+  bound = false,
+  binding = false,
+): string {
   const advertising = state?.advertising === "started" || state?.advertising === "limited";
   const connected = (state?.subscriptions ?? 0) > 0 || (state?.encrypted_reads ?? 0) > 0;
-  const paired = !!state?.paired;
+  // A watch bound from this pairing proves the earlier steps, whatever the window reported.
+  const paired = !!state?.paired || bound;
   const failure = state?.status === "stopped" && !paired ? pairingFailures[state.reason] : undefined;
   const waitingForToast = pairing && connected && !paired && state !== null;
   if (!waitingForToast) connectedAtRemaining = null;
   else connectedAtRemaining ??= state.remaining_seconds;
   const toastMissed = waitingForToast && connectedAtRemaining !== null &&
     connectedAtRemaining - state.remaining_seconds >= toastHintAfter;
-  const name = computerName ? `「${escape(computerName)}」` : "这台电脑";
   const steps: [string, string, boolean, boolean][] = [
     ["开启配对窗口", "先点右上角「开始配对」，手表才能搜到电脑。电脑会临时模拟成一个蓝牙配件，持续 120 秒。", pairing || paired, !pairing && !paired],
-    ["在手表上选择这台电脑", `在<b>手表</b>上（不是 iPhone，也不是 Windows 设置）打开「设置 → 蓝牙」，等${name}出现在健康设备里后点它。`, connected || paired, advertising && !connected && !paired],
+    ["在手表上选择这台电脑", "在<b>手表</b>上（不是 iPhone，也不是 Windows 设置）打开「设置 → 蓝牙」，等这台电脑出现后点它。", connected || paired, advertising && !connected && !paired],
     ["在电脑上允许配对", "电脑右下角会弹出 Windows 配对通知，点「允许」或「配对」。开着勿扰或专注模式时通知不会弹出，请打开通知中心（Win + N）查找。", paired, connected && !paired],
-    ["绑定手表", "配对完成后会自动开始绑定，请批准一次管理员确认，并让手表留在电脑旁。", false, paired],
+    ["绑定手表", bound ? "已绑定，可以在「我的设备」里按实际信号调整靠近和远离阈值。"
+      : binding ? "正在绑定：如果弹出 Windows 管理员确认，点「是」；让手表留在电脑旁，最长约 30 秒。"
+      : "配对完成后会自动开始绑定，读取这块手表的身份密钥。只在绑定时需要管理员权限：如果弹出 Windows 管理员确认，点「是」。请让手表留在电脑旁。", bound, paired && !bound],
   ];
   const list = steps.map(([title, detail, done, active], index) =>
     `<li class="pairing-step${done ? " done" : ""}${active ? " active" : ""}"><span class="step-number" aria-hidden="true">${done ? "✓" : index + 1}</span><div><strong>${title}</strong><small>${detail}</small></div></li>`).join("");
@@ -283,7 +298,7 @@ export function pairedPanel(paired: PairedDevice[] | null, binding: boolean): st
         `<tr><td><strong>${escape(d.name || "未命名设备")}</strong></td><td class="mono">${escape(d.address)}</td><td>${d.bound ? '<span class="badge green">已绑定</span>' : '<span class="muted">未绑定</span>'}</td><td>${d.bound ? "" : `<button class="text-button" data-bind-paired="${escape(d.address)}" ${binding ? "disabled" : ""}>绑定此设备 ${icon("arrow")}</button>`}</td></tr>`,
     )
     .join("");
-  return `<section class="panel"><div class="panel-title"><h2>Windows 已配对设备 <span>${paired.length}</span></h2><span class="muted">${binding ? "正在请求管理员确认…" : "无需手填 IRK"}</span></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  return `<section class="panel"><div class="panel-title"><h2>Windows 已配对设备 <span>${paired.length}</span></h2><span class="muted">${binding ? "正在绑定…" : "无需手填 IRK"}</span></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
 export function scanPage(
@@ -293,11 +308,11 @@ export function scanPage(
   pairingStatus: PairingStatus | null,
   paired: PairedDevice[] | null = null,
   binding = false,
-  computerName = "",
+  pairingBound = false,
 ): string {
   return `${header("NEARBY DISCOVERY", "发现附近的信号", "扫描持续 30 秒。设备可能不广播名称，Apple 广播也可能来自手机。", `<button class="button ${scanning ? "secondary" : "primary"}" id="scan-toggle">${icon("scan")}${scanning ? "停止扫描" : "开始扫描"}</button>`)}
     <div class="notice">${icon("shield")}<div><strong>扫描不等于配对或身份验证</strong><p>Apple Watch 需要先在系统完成配对并取得 IRK，再登记到本应用。蓝牙地址可能轮换；请勿仅凭名称绑定。</p></div></div>
-    ${pairingPanel(pairing, pairingStatus, computerName)}
+    ${pairingPanel(pairing, pairingStatus, pairingBound, binding)}
     ${pairedPanel(paired, binding)}
     <section class="panel"><div class="panel-title"><h2>附近广播 <span>${observed.length}</span></h2><span class="badge ${scanning ? "green" : ""}">${scanning ? "正在扫描" : "扫描未运行"}</span></div><div id="scan-results">${scanResults(observed)}</div></section>`;
 }
@@ -317,7 +332,12 @@ export function scanResults(observed: ObservedDevice[]): string {
 
 export function devicesPage(data: Snapshot, observed: DeviceSignal[]): string {
   const hasIdentity = data.devices.some((device) => device.identity_configured);
+  // A bound watch without the account password can never unlock; say so before anything else.
+  const missingPassword = hasIdentity && !data.credential_configured
+    ? `<div class="notice notice-warn" role="status">${icon("shield")}<div><strong>还差一步：保存 Windows 账户密码</strong><p>手表已经绑定，但还没保存账户密码，走远再回来也无法解锁。请在本页下方「账户解锁密码」里填写并保存。</p><button type="button" class="button primary" data-goto-password>去填写密码</button></div></div>`
+    : "";
   return `${header("DEVICE LIBRARY", "每块手表，各有边界", "多设备独立管理，Windows 登录凭据仅为当前账户保存一份。", `<button class="button primary" id="add-device">${icon("plus")}登记设备</button>`)}
+    ${missingPassword}
     <section class="device-grid">${
       data.devices
         .map((d) =>

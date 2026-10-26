@@ -55,7 +55,7 @@ export function showUpdate(update: Update, toast: (message: string) => void): vo
   const notes = update.body ? changelogHtml(update.body) : "<p>本次更新没有附带说明。</p>";
   target.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">UPDATE</div><h2 id="info-dialog-title">发现新版本 ${escape(update.version)}</h2></div>${closeButton()}</div>
     <div class="changelog">${notes}</div>
-    <p class="form-hint" id="update-progress" aria-live="polite">更新会下载并运行安装程序，需要批准一次管理员确认；设备、密码和设置都会保留。</p>
+    <p class="form-hint" id="update-progress" aria-live="polite">更新会下载并运行安装程序，如果弹出 Windows 管理员确认，点「是」；设备、密码和设置都会保留。</p>
     <div class="form-actions"><span class="spacer"></span><button type="button" class="button secondary" data-close-dialog>稍后</button><button type="button" class="button primary" id="install-update">立即更新</button></div>`;
   bindClose(target);
   const install = target.querySelector<HTMLButtonElement>("#install-update")!;

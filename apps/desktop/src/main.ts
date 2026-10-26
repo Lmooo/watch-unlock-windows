@@ -43,6 +43,13 @@ let refreshing = false;
 let paired: PairedDevice[] | null = null;
 let pairedBefore = new Set<string>();
 let autoBindPending = false;
+/** Set when Windows' paired list showed the new watch before the pairing window reported it. */
+let pairedByWindows = false;
+let lastPairedCheck = 0;
+/** Set by "去填写密码" so the next page render focuses the account password field. */
+let passwordFocusPending = false;
+/** A watch was bound after the current pairing window opened. */
+let boundThisPairing = false;
 let version = "";
 let binding = false;
 let historyFilter: HistoryFilter = "all";
@@ -115,7 +122,7 @@ function render(): void {
   const content = document.querySelector<HTMLDivElement>("#page-content")!;
   if (page === "overview") content.innerHTML = overview(data, status, signals, setup);
   if (page === "scan")
-    content.innerHTML = scanPage(observed, scanning, pairing, pairingStatus, paired, binding, setup?.computer_name ?? "");
+    content.innerHTML = scanPage(observed, scanning, pairing, pairingStatus, paired, binding, pairingBound());
   if (page === "devices") content.innerHTML = devicesPage(data, signals);
   if (page === "history") content.innerHTML = historyPage(data, historyFilter);
   if (page === "notifications") content.innerHTML = notificationsPage(data);
@@ -201,10 +208,25 @@ function bind(): void {
             // Remember who was already paired, so only the watch paired now is bound automatically.
             pairedBefore = new Set((paired ?? []).map((device) => device.address));
             autoBindPending = true;
+            pairedByWindows = false;
+            boundThisPairing = false;
           }
           await bridge.pair(shouldStart);
           pairing = shouldStart;
           render();
+        }),
+    );
+  document.querySelectorAll<HTMLButtonElement>("[data-goto-password]").forEach((button) => {
+    button.onclick = goToPassword;
+  });
+  document
+    .querySelector<HTMLButtonElement>("#export-diagnostics")
+    ?.addEventListener(
+      "click",
+      () =>
+        void act(async () => {
+          const path = await bridge.exportDiagnostics();
+          toast(`诊断信息已保存到“下载”文件夹：${path.split("\\").pop()}`);
         }),
     );
   document
@@ -278,10 +300,46 @@ function bind(): void {
  */
 function autoBindNewWatch(): void {
   if (!autoBindPending || binding) return;
+  const fresh = freshPaired();
+  if (!fresh.length) return;
   autoBindPending = false;
-  const fresh = (paired ?? []).filter((device) => !device.bound && !pairedBefore.has(device.address));
   if (fresh.length === 1) void bindPairedDevice(fresh[0].address);
-  else if (fresh.length > 1) toast("配对完成。请在“Windows 已配对设备”中选择你的手表并点击绑定。");
+  else toast("配对完成。请在“Windows 已配对设备”中选择你的手表并点击绑定。");
+}
+
+/** Step 4 of the guide: the watch from this pairing is bound, here or by an earlier bind of the new entry. */
+function pairingBound(): boolean {
+  return boundThisPairing
+    || (pairingStatus !== null && (paired ?? []).some((device) => device.bound && !pairedBefore.has(device.address)));
+}
+
+/** Unbound devices Windows paired after this pairing window opened. */
+function freshPaired(): PairedDevice[] {
+  return (paired ?? []).filter((device) => !device.bound && !pairedBefore.has(device.address));
+}
+
+/**
+ * Windows' own paired list is the fallback pairing signal: a watch can bond without the
+ * encrypted read the pairing window watches for. A new entry ends the window early.
+ */
+function checkPairedList(event: PairingStatus): void {
+  const connected = event.subscriptions > 0 || event.encrypted_reads > 0;
+  const due = connected && Date.now() - lastPairedCheck >= 3000;
+  if (!event.paired && event.status !== "stopped" && !due) return;
+  lastPairedCheck = Date.now();
+  void loadPaired().then(() => {
+    if (!pairedByWindows && freshPaired().length) {
+      pairedByWindows = true;
+      if (pairingStatus) pairingStatus = { ...pairingStatus, paired: true };
+      if (pairing) void bridge.pair(false).catch(() => undefined);
+    }
+    rerenderScanPage();
+    autoBindNewWatch();
+    // A watch Windows paired earlier never shows up as new; it only needs binding.
+    if (event.status === "stopped" && !pairedByWindows && event.reason !== "cancelled"
+      && (paired ?? []).some((device) => !device.bound))
+      toast("如果你的手表已经在下方“Windows 已配对设备”里，直接点「绑定此设备」即可，不用重新配对。");
+  });
 }
 
 /** Reads Windows' paired list. Failure shows an empty list instead of stale names. */
@@ -314,7 +372,7 @@ async function bindPairedDevice(address: string): Promise<void> {
   if (!target || binding) return;
   binding = true;
   rerenderScanPage();
-  toast("请批准 Windows 管理员确认框，并让手表靠近电脑；验证最长约 30 秒。");
+  toast("正在绑定：如果弹出 Windows 管理员确认，点「是」；让手表靠近电脑，验证最长约 30 秒。");
   let boundId: string | null = null;
   try {
     // Quotes are rejected by the request validator; the name is editable afterwards.
@@ -322,6 +380,7 @@ async function bindPairedDevice(address: string): Promise<void> {
     await bridge.bindPaired(address, name || "Apple Watch");
     await refresh();
     boundId = data.devices.find((d) => d.address === address)?.id ?? null;
+    if (boundId && pairingStatus) boundThisPairing = true;
   } catch (error) {
     toast(error instanceof Error ? error.message : "绑定未完成，请重试。");
   } finally {
@@ -329,10 +388,39 @@ async function bindPairedDevice(address: string): Promise<void> {
   }
   await loadPaired();
   render();
-  if (boundId) {
-    toast("已绑定此手表。请按实际信号调整靠近和远离阈值。");
-    showDevice(boundId);
-  }
+  if (boundId) showBound(boundId);
+}
+
+/** After binding: say what is still missing, so the user is not left on the scan page. */
+function showBound(id: string): void {
+  const dialog = document.querySelector<HTMLDialogElement>("#info-dialog")!;
+  const ready = data.credential_configured;
+  dialog.innerHTML = `<div class="dialog-heading"><div><div class="eyebrow">PAIRED</div><h2 id="info-dialog-title">手表已绑定</h2></div><button type="button" class="close-button" data-close-dialog aria-label="关闭">×</button></div>
+    <p class="form-hint">${ready
+      ? "账户密码已保存，现在锁屏后走远再回来就能解锁。可以按实际信号调整靠近和远离距离。"
+      : "还差一步：保存 Windows 账户密码。没有密码时，手表走远再回来也无法解锁。"}</p>
+    <div class="form-actions"><span class="spacer"></span><button type="button" class="button secondary" id="bound-adjust">调整距离</button><button type="button" class="button primary" id="bound-next">${ready ? "查看我的设备" : "去填写密码"}</button></div>`;
+  dialog.querySelector<HTMLButtonElement>("[data-close-dialog]")!.onclick = () => dialog.close();
+  dialog.querySelector<HTMLButtonElement>("#bound-adjust")!.onclick = () => { dialog.close(); showDevice(id); };
+  dialog.querySelector<HTMLButtonElement>("#bound-next")!.onclick = () => {
+    dialog.close();
+    if (ready) location.hash = "devices";
+    else goToPassword();
+  };
+  dialog.showModal();
+}
+
+/** Opens 我的设备 with the account password field focused. */
+function goToPassword(): void {
+  if (currentPage() === "devices") { focusPassword(); return; }
+  passwordFocusPending = true;
+  location.hash = "devices";
+}
+
+function focusPassword(): void {
+  const input = document.querySelector<HTMLInputElement>("#windows-password");
+  input?.scrollIntoView({ block: "center" });
+  input?.focus();
 }
 
 function bindScanRows(): void {
@@ -473,6 +561,7 @@ function receive(advertisement: Advertisement): void {
 window.addEventListener("hashchange", () => {
   render();
   document.querySelector<HTMLElement>("#main")?.focus();
+  if (passwordFocusPending) { passwordFocusPending = false; focusPassword(); }
   if (currentPage() === "scan") void loadPaired().then(rerenderScanPage);
 });
 window.addEventListener("beforeunload", () => {
@@ -512,14 +601,10 @@ await bridge.subscribe(
       toast("扫描未完成，请检查蓝牙适配器与后端记录。");
   },
   (event) => {
-    pairingStatus = event;
+    pairingStatus = pairedByWindows ? { ...event, paired: true } : event;
     pairing = event.status !== "stopped";
     // A completed Windows pairing or a closed window can change the paired list.
-    if (event.paired || event.status === "stopped")
-      void loadPaired().then(() => {
-        rerenderScanPage();
-        if (event.paired) autoBindNewWatch();
-      });
+    checkPairedList(event);
     rerenderScanPage();
   },
   () => {

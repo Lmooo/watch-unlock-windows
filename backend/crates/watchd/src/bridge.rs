@@ -86,6 +86,7 @@ fn dispatch(request: &Value) -> Result<Value> {
     match text(request,"op")? {
         "snapshot" => snapshot(),
         "history" => Ok(serde_json::to_value(crate::audit::history()?)?),
+        "diagnostics" => crate::diagnostics::report(),
         "clear_history" => {
             crate::audit::clear()?;
             snapshot()

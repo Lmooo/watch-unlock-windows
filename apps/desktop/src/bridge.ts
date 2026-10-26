@@ -111,6 +111,13 @@ export async function setupStatus(): Promise<SetupStatus | null> {
   return native ? invoke<SetupStatus>("setup_status") : null;
 }
 
+/** Writes the diagnostics file into Downloads and returns its path. */
+export async function exportDiagnostics(): Promise<string> {
+  if (!native) throw new Error("浏览器预览不能导出诊断信息。");
+  try { return await invoke<string>("export_diagnostics"); }
+  catch { throw new Error("导出失败，请确认“下载”文件夹可以写入。"); }
+}
+
 export async function setAutostart(enabled: boolean): Promise<SetupStatus> {
   try { return await invoke<SetupStatus>("set_autostart", { enabled }); }
   catch { throw new Error("开机自启设置失败，请确认已安装到本机。"); }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod diagnostics;
 mod links;
 mod pairing;
 mod processes;
@@ -75,7 +76,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             backend_request, runtime_status, start_daemon, stop_daemon, start_scan, stop_scan,
             start_pairing, stop_pairing
-            , links::open_link, setup::setup_status, setup::set_autostart
+            , links::open_link, setup::setup_status, setup::set_autostart, diagnostics::export_diagnostics
         ])
         .run(tauri::generate_context!())
         .expect("Unable to launch Watch Unlock desktop");

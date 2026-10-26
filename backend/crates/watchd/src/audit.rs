@@ -57,11 +57,16 @@ pub fn clear() -> anyhow::Result<()> {
 }
 
 pub fn history() -> anyhow::Result<Vec<Event>> {
+    recent(200)
+}
+
+/// The newest `limit` events, newest first.
+pub fn recent(limit: usize) -> anyhow::Result<Vec<Event>> {
     let path = crate::registry::data_dir()?.join("events.jsonl");
     if !path.exists() { return Ok(Vec::new()); }
     crate::vault::ensure_private_file(&path)?;
     let bytes = crate::vault::read_limited_file(&path, 2 * 1024 * 1024)?;
     let events = std::str::from_utf8(&bytes)?.lines()
         .filter_map(|line| serde_json::from_str(&line).ok()).collect::<Vec<Event>>();
-    Ok(events.into_iter().rev().take(200).collect())
+    Ok(events.into_iter().rev().take(limit).collect())
 }

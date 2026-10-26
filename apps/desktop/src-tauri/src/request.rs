@@ -21,6 +21,7 @@ pub enum Request {
     BindPaired { address: String, name: String },
     ClearHistory,
     NotifyTest,
+    Diagnostics,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -85,7 +86,7 @@ impl Request {
     pub fn timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(match self {
             Self::BindPaired { .. } => 200,
-            Self::NotifyTest => 30,
+            Self::NotifyTest | Self::Diagnostics => 30,
             _ => 15,
         })
     }
@@ -93,7 +94,7 @@ impl Request {
     pub fn valid(&self) -> bool {
         match self {
             Self::Snapshot | Self::History | Self::ClearCredential | Self::PairedDevices
-                | Self::ClearHistory | Self::NotifyTest => true,
+                | Self::ClearHistory | Self::NotifyTest | Self::Diagnostics => true,
             Self::BindPaired { address, name } => address_format(address)
                 && bounded(name, 64) && !name.trim().is_empty()
                 && !name.chars().any(|c| c.is_control() || c == '"'),

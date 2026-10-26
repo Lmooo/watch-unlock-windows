@@ -1,6 +1,7 @@
 ﻿; Installer hooks for the setup.exe built by `tauri build`. NSIS is a 32-bit program, so every
 ; registry write uses SetRegView 64; otherwise the provider would land in WOW6432Node and LogonUI
-; (64-bit) would never load it.
+; (64-bit) would never load it. Tauri's template already runs in the 64-bit view: never switch back
+; to 32, or its own Add/Remove Programs entry is written and deleted in the wrong view.
 
 !define WU_CLSID "{A8CA66E1-5FCA-45DD-8D79-44FC9701B739}"
 !define WU_PROVIDER_KEY "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\${WU_CLSID}"
@@ -60,7 +61,6 @@
   WriteRegStr HKLM "${WU_CLASS_KEY}\InprocServer32" "ThreadingModel" "Apartment"
   ; Start the background at logon for the installing user; the app's switch turns it off.
   WriteRegStr HKCU "${WU_RUN_KEY}" "WatchUnlockWindows" '"$INSTDIR\watchd-supervisor.exe"'
-  SetRegView 32
   ; Earlier script-based installs used a scheduled task of the same name.
   nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /TN WatchUnlockWindows /F'
   Pop $0
@@ -72,7 +72,6 @@
   DeleteRegKey HKLM "${WU_PROVIDER_KEY}"
   DeleteRegKey HKLM "${WU_CLASS_KEY}"
   DeleteRegValue HKCU "${WU_RUN_KEY}" "WatchUnlockWindows"
-  SetRegView 32
   ; Unregistered above, so no new LogonUI loads it; the copy loaded now goes at restart.
   !insertmacro WU_SET_ASIDE_PROVIDER
 !macroend

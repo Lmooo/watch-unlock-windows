@@ -6,6 +6,7 @@ mod ble;
 mod bind;
 mod bridge;
 mod config;
+mod diagnostics;
 mod enroll;
 mod irk;
 mod notify;

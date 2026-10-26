@@ -303,15 +303,22 @@ pub fn launch(address: &str, name: &str) -> Result<serde_json::Value> {
         nShow: SW_HIDE.0 as i32,
         ..Default::default()
     };
-    unsafe { ShellExecuteExW(&mut info)? };
+    // Only the outcome is recorded; the elevated process's own errors stay inside it.
+    let failed = |detail: &str| {
+        crate::audit::record("bind_failed", None, detail);
+        anyhow::anyhow!("Binding did not complete")
+    };
+    if unsafe { ShellExecuteExW(&mut info) }.is_err() || info.hProcess.is_invalid() {
+        return Err(failed("绑定未完成：管理员确认被取消或无法提权"));
+    }
     let process = HandleGuard(info.hProcess);
-    ensure!(!process.0.is_invalid(), "Elevation was cancelled or unavailable");
     // Bounded wait: an unanswered UAC prompt must not block the UI request forever.
     let waited = unsafe { WaitForSingleObject(process.0, LAUNCH_TIMEOUT_MS) };
-    ensure!(waited == WAIT_OBJECT_0, "Binding timed out or was cancelled");
+    if waited != WAIT_OBJECT_0 { return Err(failed("绑定未完成：等待管理员确认或读取手表身份超时")); }
     let mut code = 1u32;
-    unsafe { GetExitCodeProcess(process.0, &mut code)? };
-    ensure!(code as i32 == EXIT_BOUND, "Binding did not complete");
+    if unsafe { GetExitCodeProcess(process.0, &mut code) }.is_err() || code as i32 != EXIT_BOUND {
+        return Err(failed("绑定未完成：没能读取或验证这块手表的身份，请让手表靠近电脑后重试"));
+    }
     Ok(json!({"status":"bound"}))
 }
 

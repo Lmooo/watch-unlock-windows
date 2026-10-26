@@ -297,7 +297,10 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
             // Subscription alone never proves an encrypted link. Verify the exact
             // peer session that completed an EncryptionRequired measurement read.
             let recent = window.reads.session.lock().ok().and_then(|value| value.clone());
-            if let Some(session) = recent { state.paired = verified_pairing(&session, end); }
+            // A watch may only subscribe (an encrypted descriptor write) and never read, so the
+            // subscribed sessions are checked too; Windows' bond state decides either way.
+            let subscribed = clients.into_iter().take(4).filter_map(|client| client.Session().ok());
+            state.paired = recent.into_iter().chain(subscribed).any(|session| verified_pairing(&session, end));
             if state.paired { return Ok("bond_verified_identity_not_imported"); }
         }
         if now >= next_report {
@@ -309,6 +312,53 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
 }
 
 /// Advertise only in response to an explicit pairing action, for at most 120 seconds.
+/// Read-only Bluetooth facts for the diagnostics report: the same checks as the pairing preflight.
+pub fn bluetooth_report() -> Vec<(&'static str, &'static str)> {
+    fn answer(value: windows::core::Result<bool>) -> &'static str {
+        match value { Ok(true) => "是", Ok(false) => "否", Err(_) => "无法读取" }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    if unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_err() { return vec![("蓝牙", "无法读取")]; }
+    let _apartment = Apartment;
+    let Some(adapter) = BluetoothAdapter::GetDefaultAsync().ok().and_then(|operation| wait(operation, deadline).ok()) else {
+        return vec![("蓝牙适配器", "没有找到")];
+    };
+    let radio = adapter.GetRadioAsync().ok().and_then(|operation| wait(operation, deadline).ok())
+        .and_then(|radio| radio.State().ok());
+    let radio = match radio {
+        Some(state) if state == RadioState::On => "已打开",
+        Some(state) if state == RadioState::Off => "已关闭",
+        Some(state) if state == RadioState::Disabled => "已禁用",
+        Some(_) => "未知",
+        None => "无法读取",
+    };
+    vec![
+        ("蓝牙适配器", "已找到"),
+        ("蓝牙开关", radio),
+        ("低功耗蓝牙", answer(adapter.IsLowEnergySupported())),
+        ("外设模式（配对需要）", answer(adapter.IsPeripheralRoleSupported())),
+        ("中心模式（扫描需要）", answer(adapter.IsCentralRoleSupported())),
+    ]
+}
+
+/// History line for a closed pairing window. Fixed text only; a cancelled window is not recorded.
+fn outcome_detail(paired: bool, reason: &str, watch_connected: bool) -> Option<(&'static str, &'static str)> {
+    if paired { return Some(("pairing_completed", "Windows 已与手表完成配对")); }
+    let detail = match reason {
+        "no_adapter" => "配对未完成：没有找到蓝牙适配器",
+        "radio_off" => "配对未完成：蓝牙已关闭",
+        "le_unsupported" => "配对未完成：蓝牙不支持低功耗蓝牙",
+        "peripheral_unsupported" => "配对未完成：蓝牙适配器不支持外设模式",
+        "service_failed" => "配对未完成：无法开启配对服务",
+        "advertising_aborted" => "配对未完成：配对广播被系统中断",
+        "timeout" if watch_connected => "配对未完成：手表已连接，但 Windows 没有确认配对（可能漏点了配对通知）",
+        "timeout" => "配对未完成：配对窗口内手表没有连接这台电脑",
+        "cancelled" => return None,
+        _ => "配对未完成：配对窗口无法开启",
+    };
+    Some(("pairing_failed", detail))
+}
+
 pub fn run(seconds: u64) -> Result<()> {
     ensure!((1..=120).contains(&seconds), "Pairing duration must be from 1 to 120 seconds");
     ensure!(!RUNNING.swap(true, Ordering::AcqRel), "A pairing window is already active");
@@ -322,17 +372,31 @@ pub fn run(seconds: u64) -> Result<()> {
     let result = run_window(seconds, &mut state);
     state.advertising = "stopped";
     state.remaining_seconds = 0;
-    emit(event("stopped", &state, match &result {
+    let reason = match &result {
         Ok(reason) => reason,
         Err(_) if CANCELLED.load(Ordering::Acquire) => "cancelled",
         Err(error) => error.downcast_ref::<Unavailable>().map_or("unavailable", |reason| reason.0),
-    }));
+    };
+    emit(event("stopped", &state, reason));
+    let watch_connected = state.subscriptions > 0 || state.encrypted_reads > 0;
+    if let Some((name, detail)) = outcome_detail(state.paired, reason, watch_connected) {
+        crate::audit::record(name, None, detail);
+    }
     result.map(|_| ()).map_err(|_| anyhow::anyhow!("Pairing window unavailable; check Bluetooth and BLE peripheral support"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_windows_are_recorded_except_when_cancelled() {
+        assert_eq!(outcome_detail(true, "timeout", true).map(|o| o.0), Some("pairing_completed"));
+        assert_eq!(outcome_detail(false, "cancelled", true), None);
+        assert_eq!(outcome_detail(false, "radio_off", false).map(|o| o.0), Some("pairing_failed"));
+        // A connected watch without a bond points at the missed Windows toast.
+        assert_ne!(outcome_detail(false, "timeout", true), outcome_detail(false, "timeout", false));
+    }
 
     #[test]
     fn failure_reasons_survive_as_fixed_labels() {

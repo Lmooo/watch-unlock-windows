@@ -123,5 +123,4 @@ export interface SetupStatus {
   running_installed: boolean;
   provider_registered: boolean;
   autostart: boolean;
-  computer_name: string;
 }
