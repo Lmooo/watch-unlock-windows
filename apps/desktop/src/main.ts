@@ -14,6 +14,7 @@ import {
   shell,
 } from "./render";
 import type { HistoryFilter } from "./render";
+import { appVersion, findUpdate, showChangelog, showUpdate } from "./update";
 import { emptySnapshot } from "./types";
 import type {
   Advertisement,
@@ -40,6 +41,9 @@ let backendError = "";
 let toastTimer = 0;
 let refreshing = false;
 let paired: PairedDevice[] | null = null;
+let pairedBefore = new Set<string>();
+let autoBindPending = false;
+let version = "";
 let binding = false;
 let historyFilter: HistoryFilter = "all";
 
@@ -111,7 +115,7 @@ function render(): void {
   const content = document.querySelector<HTMLDivElement>("#page-content")!;
   if (page === "overview") content.innerHTML = overview(data, status, signals, setup);
   if (page === "scan")
-    content.innerHTML = scanPage(observed, scanning, pairing, pairingStatus, paired, binding);
+    content.innerHTML = scanPage(observed, scanning, pairing, pairingStatus, paired, binding, setup?.computer_name ?? "");
   if (page === "devices") content.innerHTML = devicesPage(data, signals);
   if (page === "history") content.innerHTML = historyPage(data, historyFilter);
   if (page === "notifications") content.innerHTML = notificationsPage(data);
@@ -119,11 +123,15 @@ function render(): void {
 }
 
 function bind(): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-changelog]").forEach((button) => {
+    if (version) button.textContent = `v${version} · 更新记录`;
+    button.onclick = () => void showChangelog(toast);
+  });
   document.querySelectorAll<HTMLElement>("[data-link]").forEach((element) => {
     element.onclick = (event) => {
       event.preventDefault();
       const link = element.dataset.link;
-      if (link === "repo" || link === "bark") void act(() => bridge.openLink(link));
+      if (link === "repo" || link === "bark" || link === "bluetooth") void act(() => bridge.openLink(link));
     };
   });
   document
@@ -188,7 +196,12 @@ function bind(): void {
       () =>
         void act(async () => {
           const shouldStart = !pairing;
-          if (shouldStart) pairingStatus = null;
+          if (shouldStart) {
+            pairingStatus = null;
+            // Remember who was already paired, so only the watch paired now is bound automatically.
+            pairedBefore = new Set((paired ?? []).map((device) => device.address));
+            autoBindPending = true;
+          }
           await bridge.pair(shouldStart);
           pairing = shouldStart;
           render();
@@ -257,6 +270,18 @@ function bind(): void {
   document
     .querySelector<HTMLFormElement>("#notifications-form")
     ?.addEventListener("submit", saveNotifications);
+}
+
+/**
+ * Binds the one watch that this pairing window added. With several new entries the user picks
+ * one in the paired list instead, so a nearby stranger's device is never bound by guess.
+ */
+function autoBindNewWatch(): void {
+  if (!autoBindPending || binding) return;
+  autoBindPending = false;
+  const fresh = (paired ?? []).filter((device) => !device.bound && !pairedBefore.has(device.address));
+  if (fresh.length === 1) void bindPairedDevice(fresh[0].address);
+  else if (fresh.length > 1) toast("配对完成。请在“Windows 已配对设备”中选择你的手表并点击绑定。");
 }
 
 /** Reads Windows' paired list. Failure shows an empty list instead of stale names. */
@@ -461,12 +486,18 @@ window.addEventListener("beforeunload", () => {
 setup = await bridge.setupStatus().catch(() => null);
 render();
 await refresh();
-// Right after setup.exe nobody has logged on since, so the logon entry has not run yet.
-if (setup?.running_installed && setup.autostart && !data.backend_running && !status.daemon_running) {
+// Right after setup.exe nobody has logged on since, so the logon entry has not run yet. The
+// installer kills the background without a final status write, so `backend_running` can still
+// look fresh here; the supervisor is single-instance, so starting it again is harmless.
+if (setup?.running_installed && setup.autostart && !status.daemon_running) {
   status = await bridge.daemon(true).catch(() => status);
   await refresh();
 }
+version = await appVersion();
 render();
+// Only the installed copy updates itself; a failed check stays silent.
+if (setup?.running_installed)
+  void findUpdate().then((update) => { if (update) showUpdate(update, toast); });
 void loadPaired().then(rerenderScanPage);
 await bridge.subscribe(
   receive,
@@ -485,7 +516,10 @@ await bridge.subscribe(
     pairing = event.status !== "stopped";
     // A completed Windows pairing or a closed window can change the paired list.
     if (event.paired || event.status === "stopped")
-      void loadPaired().then(rerenderScanPage);
+      void loadPaired().then(() => {
+        rerenderScanPage();
+        if (event.paired) autoBindNewWatch();
+      });
     rerenderScanPage();
   },
   () => {

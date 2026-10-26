@@ -337,10 +337,85 @@ td strong {
 .pairing-panel {
   padding: 22px 25px;
   margin-bottom: 22px;
+}
+.pairing-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
+}
+.pairing-steps {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.pairing-step {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.pairing-step strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pairing-step small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.step-number {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface-soft);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.pairing-step.active {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+.pairing-step.active .step-number {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.pairing-step.done .step-number {
+  background: var(--primary-soft);
+  border-color: var(--primary-soft);
+  color: var(--primary-strong);
+}
+.pairing-meta {
+  margin-top: 12px;
+}
+.pairing-failure {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.pairing-failure p {
+  color: var(--warn-text);
+  margin: 0;
 }
 .pairing-panel h2 {
   font-size: 15px;

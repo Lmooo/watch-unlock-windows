@@ -71,7 +71,7 @@ export async function pair(start: boolean): Promise<void> {
   await invoke(start ? "start_pairing" : "stop_pairing");
 }
 
-export type Link = "repo" | "bark";
+export type Link = "repo" | "bark" | "bluetooth";
 
 export async function openLink(link: Link): Promise<void> {
   if (!native) throw new Error("请在桌面应用中打开链接。");

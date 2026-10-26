@@ -7,6 +7,27 @@
 !define WU_CLASS_KEY "SOFTWARE\Classes\CLSID\${WU_CLSID}"
 !define WU_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
+; LogonUI stays resident and keeps the provider DLL loaded, so the file cannot be deleted until
+; Windows restarts. MoveFileEx queues the removal without setting the NSIS reboot flag: nothing
+; needs a restart to work, so the finish page must not ask for one.
+!macro WU_DELETE_AT_RESTART PATH
+  ${If} ${FileExists} "${PATH}"
+    Delete "${PATH}"
+    ${If} ${FileExists} "${PATH}"
+      System::Call 'kernel32::MoveFileExW(w "${PATH}", p 0, i 4)'
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+; Renames the loaded provider aside so a new copy can take its place, then queues the old one.
+!macro WU_SET_ASIDE_PROVIDER
+  ${If} ${FileExists} "$INSTDIR\watch_unlock_provider.dll"
+    Delete "$INSTDIR\watch_unlock_provider.dll.old"
+    Rename "$INSTDIR\watch_unlock_provider.dll" "$INSTDIR\watch_unlock_provider.dll.old"
+  ${EndIf}
+  !insertmacro WU_DELETE_AT_RESTART "$INSTDIR\watch_unlock_provider.dll.old"
+!macroend
+
 !macro WU_STOP_BACKGROUND
   ; The supervisor first, so it cannot relaunch the daemon being replaced.
   nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM watchd-supervisor.exe'
@@ -28,15 +49,11 @@
   ${EndIf}
   !insertmacro WU_STOP_BACKGROUND
   ; LogonUI keeps the provider DLL loaded, so it cannot be overwritten. A loaded DLL can still be
-  ; renamed; the old copy is removed at the next restart.
-  ${If} ${FileExists} "$INSTDIR\watch_unlock_provider.dll"
-    Delete "$INSTDIR\watch_unlock_provider.dll.old"
-    Rename "$INSTDIR\watch_unlock_provider.dll" "$INSTDIR\watch_unlock_provider.dll.old"
-  ${EndIf}
+  ; renamed; LogonUI keeps the old code until Windows restarts, and the pipe protocol is unchanged.
+  !insertmacro WU_SET_ASIDE_PROVIDER
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  Delete /REBOOTOK "$INSTDIR\watch_unlock_provider.dll.old"
   SetRegView 64
   WriteRegStr HKLM "${WU_PROVIDER_KEY}" "" "Watch Unlock Windows"
   WriteRegStr HKLM "${WU_CLASS_KEY}\InprocServer32" "" "$INSTDIR\watch_unlock_provider.dll"
@@ -56,9 +73,16 @@
   DeleteRegKey HKLM "${WU_CLASS_KEY}"
   DeleteRegValue HKCU "${WU_RUN_KEY}" "WatchUnlockWindows"
   SetRegView 32
+  ; Unregistered above, so no new LogonUI loads it; the copy loaded now goes at restart.
+  !insertmacro WU_SET_ASIDE_PROVIDER
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; The folder still holds the set-aside provider; queue it too (Windows removes it only if empty).
+  ${If} ${FileExists} "$INSTDIR\*.*"
+  ${AndIf} $UpdateMode <> 1
+    System::Call 'kernel32::MoveFileExW(w "$INSTDIR", p 0, i 4)'
+  ${EndIf}
   ; "Delete application data" also removes the encrypted password, watch keys and history,
   ; which live outside the bundle-id folders the default uninstaller clears. Kept on updates.
   ${If} $DeleteAppDataCheckboxState = 1

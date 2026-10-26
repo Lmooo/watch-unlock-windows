@@ -56,7 +56,7 @@ fn main() {
         Cmd::ImportDevice {identity_file,name} => bridge::import_device(&identity_file,&name),
         Cmd::BindPaired {address,name} => bind::run(&address,&name),
         Cmd::Enroll => enroll::enroll(),
-        Cmd::NotifyTest => notify::notify_test(),
+        Cmd::NotifyTest => notify::notify_test().map_err(anyhow::Error::from),
     };
     if result.is_err() {
         // Raw Windows/network errors may contain identities or user-supplied URLs.

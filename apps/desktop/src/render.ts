@@ -100,6 +100,7 @@ const eventNames: Record<string, string> = {
   credential_removed: "账户凭据已移除",
   notifications_saved: "通知设置已保存",
   notification_test: "测试通知",
+  notification_failed: "通知发送失败",
   configuration_reloaded: "配置重新加载",
   history_cleared: "记录已清空",
 };
@@ -112,7 +113,7 @@ const historyGroups: Record<Exclude<HistoryFilter, "all">, string[]> = {
   unlock: ["session_locked", "session_unlocked", "session_reconciled", "far_threshold_crossed",
     "return_detected", "return_authorization_expired", "provider_connected", "display_woke", "lock_screen_input", "unlock_submitted"],
   config: ["device_saved", "device_removed", "credential_saved", "credential_removed",
-    "notifications_saved", "notification_test", "configuration_reloaded", "history_cleared"],
+    "notifications_saved", "notification_test", "notification_failed", "configuration_reloaded", "history_cleared"],
   backend: ["backend_started", "backend_stopped", "scanner_reset", "scanner_unavailable",
     "pipe_client_connected", "pipe_session_mismatch", "pipe_hello_timeout", "pipe_client_dropped",
     "pipe_peer_rejected", "pipe_peer_not_system", "pipe_peer_not_logonui", "pipe_peer_unknown",
@@ -161,8 +162,8 @@ export function shell(page: Page): string {
     ["history", "解锁记录", "04"],
     ["notifications", "通知设置", "05"],
   ];
-  return `<aside class="sidebar"><a href="#overview" class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Watch Unlock<small>让靠近，成为连接</small></span></a><div class="nav-label">工作空间</div><nav aria-label="主要导航">${nav.map(([id, title, count]) => `<a href="#${id}" class="nav-item ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""}>${icon(id)}<span>${title}</span><small>${count}</small></a>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-meta"><a class="repo-link" href="https://github.com/whyy1/watch-unlock-windows" data-link="repo" title="在 GitHub 查看源码" aria-label="在 GitHub 查看源码">${icon("github")}</a><span class="version-label">AGPL-3.0 · 不提供任何担保</span></div><div class="local-status"><span class="status-dot"></span>本地处理 · 密钥加密存储</div></div></aside>
-  <main id="main" tabindex="-1"><header class="topbar"><span>个人工作空间 <span class="breadcrumb">/</span> ${nav.find((n) => n[0] === page)?.[1]}</span><div class="topbar-right"><span class="status-dot amber"></span>${native ? "桌面应用" : "浏览器预览"}</div></header><div class="content"><div id="mode-banner"></div><div id="page-content"></div><footer>WATCH UNLOCK <span>公开广播只提供接近线索。当前 Apple 接入无法确认手表锁定或佩戴状态。</span></footer></div></main><div id="toast" role="status" aria-live="polite"></div><dialog id="device-dialog" aria-labelledby="device-dialog-title"></dialog>`;
+  return `<aside class="sidebar"><a href="#overview" class="brand"><span class="brand-logo" aria-hidden="true"></span><span>Watch Unlock<small>让靠近，成为连接</small></span></a><div class="nav-label">工作空间</div><nav aria-label="主要导航">${nav.map(([id, title, count]) => `<a href="#${id}" class="nav-item ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""}>${icon(id)}<span>${title}</span><small>${count}</small></a>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-meta"><a class="repo-link" href="https://github.com/whyy1/watch-unlock-windows" data-link="repo" title="在 GitHub 查看源码" aria-label="在 GitHub 查看源码">${icon("github")}</a><span class="version-label">AGPL-3.0 · 不提供任何担保</span></div><button type="button" class="version-link" data-changelog>更新记录</button><div class="local-status"><span class="status-dot"></span>本地处理 · 密钥加密存储</div></div></aside>
+  <main id="main" tabindex="-1"><header class="topbar"><span>个人工作空间 <span class="breadcrumb">/</span> ${nav.find((n) => n[0] === page)?.[1]}</span><div class="topbar-right"><span class="status-dot amber"></span>${native ? "桌面应用" : "浏览器预览"}</div></header><div class="content"><div id="mode-banner"></div><div id="page-content"></div><footer>WATCH UNLOCK <span>公开广播只提供接近线索。当前 Apple 接入无法确认手表锁定或佩戴状态。</span></footer></div></main><div id="toast" role="status" aria-live="polite"></div><dialog id="device-dialog" aria-labelledby="device-dialog-title"></dialog><dialog id="info-dialog" aria-labelledby="info-dialog-title"></dialog>`;
 }
 
 export function header(
@@ -213,22 +214,62 @@ export function overview(
     <div class="section-heading"><div><h2>最近活动</h2><p>如实记录配置与授权事件。</p></div><a href="#history">查看记录 ${icon("arrow")}</a></div><section class="panel" id="activity-content">${historyTable(data.history, data.devices, 5)}</section>`;
 }
 
-function pairingProgress(pairing: boolean, state: PairingStatus | null): string {
-  if (!state) return pairing ? "等待后端开启配对广播窗口。" : "尚未开启配对窗口。现有系统配对不会由本页自动更改。";
-  const advertising: Record<string, string> = {
-    created: "准备中", started: "已开启", limited: "部分广播已开启",
-    aborted: "广播中断", stopped: "已停止", unknown: "未知",
-  };
-  const reasons: Record<string, string> = {
-    cancelled: "配对窗口已取消。", timeout: "配对窗口已到期。",
-    unavailable: "配对窗口不可用，请检查蓝牙及外设模式支持。",
-  };
-  const summary = state.paired
-    ? "Windows 已完成配对。请在下方「Windows 已配对设备」中点击绑定，应用会自动读取并验证身份。"
-    : state.status === "stopped"
-      ? (reasons[state.reason] || "配对窗口已关闭，本次未验证配对完成。")
-      : "配对窗口已开启，等待手表连接与系统确认。";
-  return `${summary} 广播：${advertising[state.advertising] || "未知"}；剩余 ${state.remaining_seconds} 秒；订阅 ${state.subscriptions}；加密读取 ${state.encrypted_reads}。广播、订阅和读取次数均不能确认手表身份。`;
+/** What went wrong with a pairing window, and what the user can do about it. */
+const pairingFailures: Record<string, { text: string; bluetooth?: boolean }> = {
+  no_adapter: { text: "没有找到蓝牙适配器。请确认电脑有蓝牙，并且在设备管理器中已启用。" },
+  radio_off: { text: "蓝牙已关闭。请在 Windows 设置中打开蓝牙后重试。", bluetooth: true },
+  le_unsupported: { text: "这台电脑的蓝牙不支持低功耗蓝牙（BLE），无法与手表配对。" },
+  peripheral_unsupported: {
+    text: "这台电脑的蓝牙适配器不支持“外设模式”，手表搜不到这台电脑。可以换一个支持外设模式（Peripheral role）的 USB 蓝牙适配器。",
+  },
+  service_failed: { text: "无法开启配对服务。请关闭再打开蓝牙后重试；仍然失败的话，重启电脑。", bluetooth: true },
+  advertising_aborted: { text: "配对广播被系统中断。请关闭其他正在使用蓝牙的程序后重试。" },
+  timeout: {
+    text: "120 秒内没有完成配对。如果手表上看不到这台电脑，或之前配对过：先在 Windows 蓝牙设置里删除旧的配对，并在手表上忽略这台电脑，然后重试。",
+    bluetooth: true,
+  },
+  cancelled: { text: "配对已取消。" },
+  native_process_stopped: { text: "配对进程意外退出，请重试。" },
+  unavailable: { text: "配对窗口无法开启，请检查蓝牙后重试。", bluetooth: true },
+};
+
+/** Seconds the watch may sit connected without a finished pairing before the guide points at the toast. */
+const toastHintAfter = 15;
+/** Remaining seconds of the window when the watch first connected; null while not connected. */
+let connectedAtRemaining: number | null = null;
+
+/**
+ * A numbered guide. Each step lights up from live counters; none of them is proof of identity,
+ * which only the binding step establishes.
+ */
+export function pairingPanel(pairing: boolean, state: PairingStatus | null, computerName = ""): string {
+  const advertising = state?.advertising === "started" || state?.advertising === "limited";
+  const connected = (state?.subscriptions ?? 0) > 0 || (state?.encrypted_reads ?? 0) > 0;
+  const paired = !!state?.paired;
+  const failure = state?.status === "stopped" && !paired ? pairingFailures[state.reason] : undefined;
+  const waitingForToast = pairing && connected && !paired && state !== null;
+  if (!waitingForToast) connectedAtRemaining = null;
+  else connectedAtRemaining ??= state.remaining_seconds;
+  const toastMissed = waitingForToast && connectedAtRemaining !== null &&
+    connectedAtRemaining - state.remaining_seconds >= toastHintAfter;
+  const name = computerName ? `「${escape(computerName)}」` : "这台电脑";
+  const steps: [string, string, boolean, boolean][] = [
+    ["开启配对窗口", "先点右上角「开始配对」，手表才能搜到电脑。电脑会临时模拟成一个蓝牙配件，持续 120 秒。", pairing || paired, !pairing && !paired],
+    ["在手表上选择这台电脑", `在<b>手表</b>上（不是 iPhone，也不是 Windows 设置）打开「设置 → 蓝牙」，等${name}出现在健康设备里后点它。`, connected || paired, advertising && !connected && !paired],
+    ["在电脑上允许配对", "电脑右下角会弹出 Windows 配对通知，点「允许」或「配对」。开着勿扰或专注模式时通知不会弹出，请打开通知中心（Win + N）查找。", paired, connected && !paired],
+    ["绑定手表", "配对完成后会自动开始绑定，请批准一次管理员确认，并让手表留在电脑旁。", false, paired],
+  ];
+  const list = steps.map(([title, detail, done, active], index) =>
+    `<li class="pairing-step${done ? " done" : ""}${active ? " active" : ""}"><span class="step-number" aria-hidden="true">${done ? "✓" : index + 1}</span><div><strong>${title}</strong><small>${detail}</small></div></li>`).join("");
+  const status = pairing && state
+    ? `<p class="pairing-meta" id="pairing-progress" aria-live="polite">剩余 ${state.remaining_seconds} 秒 · 广播${advertising ? "已开启" : "准备中"}</p>`
+    : `<p class="pairing-meta" id="pairing-progress" aria-live="polite"></p>`;
+  const problem = failure
+    ? `<div class="pairing-failure" role="alert"><p>${failure.text}</p>${failure.bluetooth ? '<button type="button" class="button secondary" data-link="bluetooth">打开 Windows 蓝牙设置</button>' : ""}</div>`
+    : toastMissed
+      ? '<div class="pairing-failure" role="alert"><p>手表已经连上，但电脑还没确认配对。请看电脑右下角或通知中心（Win + N），在 Windows 配对通知里点「允许」。没有看到通知的话，检查是否开了勿扰或专注模式。</p></div>'
+      : "";
+  return `<section class="panel pairing-panel"><div class="pairing-head"><div><h2>第一次连接 Apple Watch</h2><p>按下面的步骤操作，配对完成后会自动绑定。</p></div><button class="button ${pairing ? "secondary" : "primary"}" id="pairing-toggle">${pairing ? "停止配对" : "开始配对"}</button></div><ol class="pairing-steps">${list}</ol>${status}${problem}</section>`;
 }
 
 export function pairedPanel(paired: PairedDevice[] | null, binding: boolean): string {
@@ -252,10 +293,11 @@ export function scanPage(
   pairingStatus: PairingStatus | null,
   paired: PairedDevice[] | null = null,
   binding = false,
+  computerName = "",
 ): string {
   return `${header("NEARBY DISCOVERY", "发现附近的信号", "扫描持续 30 秒。设备可能不广播名称，Apple 广播也可能来自手机。", `<button class="button ${scanning ? "secondary" : "primary"}" id="scan-toggle">${icon("scan")}${scanning ? "停止扫描" : "开始扫描"}</button>`)}
     <div class="notice">${icon("shield")}<div><strong>扫描不等于配对或身份验证</strong><p>Apple Watch 需要先在系统完成配对并取得 IRK，再登记到本应用。蓝牙地址可能轮换；请勿仅凭名称绑定。</p></div></div>
-    <section class="panel pairing-panel"><div><h2>第一次连接 Apple Watch？</h2><p>打开 120 秒配对窗口后，在手表「设置 → 蓝牙」中寻找这台电脑，并亲自确认 Windows 系统配对弹窗。</p><p id="pairing-progress" aria-live="polite">${escape(pairingProgress(pairing, pairingStatus))}</p></div><button class="button secondary" id="pairing-toggle">${pairing ? "停止配对窗口" : "开始 Windows 配对"}</button></section>
+    ${pairingPanel(pairing, pairingStatus, computerName)}
     ${pairedPanel(paired, binding)}
     <section class="panel"><div class="panel-title"><h2>附近广播 <span>${observed.length}</span></h2><span class="badge ${scanning ? "green" : ""}">${scanning ? "正在扫描" : "扫描未运行"}</span></div><div id="scan-results">${scanResults(observed)}</div></section>`;
 }
@@ -293,5 +335,5 @@ export function devicesPage(data: Snapshot, observed: DeviceSignal[]): string {
 export function notificationsPage(data: Snapshot): string {
   const n = data.notifications;
   return `${header("NOTIFICATIONS", "让提醒，抵达手腕", "通过 Bark 推送解锁提醒；通知只用于告知，不参与解锁。")}
-    <form id="notifications-form" class="panel settings-panel"><div class="settings-heading"><div class="setting-icon">${icon("notifications")}</div><div><h2>Bark 通知</h2><p>在 iPhone 安装 Bark App，复制其中的设备密钥填到这里。密钥留空会保留已有设置，保存后不会回显。<button type="button" class="text-button" data-link="bark">在 App Store 下载 Bark</button></p></div><span class="badge ${n.configured ? "green" : ""}">${n.configured ? "已配置密钥" : "待配置"}</span></div><div class="form-grid"><label>推送 API 地址<input name="endpoint" type="url" value="${escape(n.endpoint)}" required placeholder="https://api.day.app/push"/></label><label>Bark 设备密钥<input name="device_key" type="password" autocomplete="new-password" maxlength="256" placeholder="${n.configured ? "已保存；留空保留" : "输入设备密钥"}"/></label></div><label class="toggle-row"><input name="enabled" type="checkbox" ${n.enabled ? "checked" : ""}/><span><strong>启用通知</strong><small>测试通知使用已保存的地址与密钥，修改后请先保存。</small></span></label><label class="toggle-row"><input name="notify_on_unlock" type="checkbox" ${n.notify_on_unlock === false ? "" : "checked"}/><span><strong>解锁后通知</strong><small>由本应用解锁后推送一条提醒。关闭后只记录日志。</small></span></label><div class="form-actions"><button type="submit" class="button primary">保存通知设置</button><button type="button" class="button secondary" id="notify-test" ${n.configured ? "" : "disabled"} title="使用已保存的地址与密钥发送">发送测试通知</button><span class="muted">所有秘密通过桌面 IPC 传输，不写浏览器存储。</span></div></form>`;
+    <form id="notifications-form" class="panel settings-panel"><div class="settings-heading"><div class="setting-icon">${icon("notifications")}</div><div><h2>Bark 通知</h2><p>在 iPhone 安装 Bark App，复制其中的设备密钥填到这里。密钥留空会保留已有设置，保存后不会回显。<button type="button" class="text-button" data-link="bark">在 App Store 下载 Bark</button></p></div><span class="badge ${n.configured ? "green" : ""}">${n.configured ? "已配置密钥" : "待配置"}</span></div><div class="form-grid"><label>推送 API 地址<input name="endpoint" type="url" value="${escape(n.endpoint)}" required placeholder="https://api.day.app/push"/></label><label>Bark 设备密钥<input name="device_key" type="password" autocomplete="new-password" maxlength="256" placeholder="${n.configured ? "已保存；留空保留" : "输入设备密钥"}"/></label></div><label class="toggle-row"><input name="enabled" type="checkbox" ${n.enabled ? "checked" : ""}/><span><strong>启用通知</strong><small>测试通知使用已保存的地址与密钥，修改后请先保存。</small></span></label><label class="toggle-row"><input name="notify_on_unlock" type="checkbox" ${n.notify_on_unlock === false ? "" : "checked"}/><span><strong>解锁后通知</strong><small>由本应用解锁后推送一条提醒。关闭后只记录日志。</small></span></label><div class="form-actions"><button type="submit" class="button primary">保存通知设置</button><button type="button" class="button secondary" id="notify-test" ${n.configured ? "" : "disabled"} title="使用已保存的地址与密钥发送">发送测试通知</button><span class="muted">测试会使用已保存的设置，修改后请先保存；不勾选「启用通知」也能测试。</span></div></form>`;
 }

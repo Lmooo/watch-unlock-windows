@@ -3,5 +3,5 @@
   "identifier": "main-local",
   "description": "Only the local main window receives app commands and scan events.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
 }

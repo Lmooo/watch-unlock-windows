@@ -3,6 +3,7 @@ fn url_for(link: &str) -> Option<&'static str> {
     match link {
         "repo" => Some("https://github.com/whyy1/watch-unlock-windows"),
         "bark" => Some("https://apps.apple.com/app/id1403753865"),
+        "bluetooth" => Some("ms-settings:bluetooth"),
         _ => None,
     }
 }
@@ -38,6 +39,7 @@ mod tests {
     fn only_named_fixed_links_open() {
         assert_eq!(url_for("repo"), Some("https://github.com/whyy1/watch-unlock-windows"));
         assert_eq!(url_for("bark"), Some("https://apps.apple.com/app/id1403753865"));
+        assert_eq!(url_for("bluetooth"), Some("ms-settings:bluetooth"));
         for link in ["", "license", "https://example.invalid", "repo "] {
             assert!(url_for(link).is_none());
         }

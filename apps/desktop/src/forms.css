@@ -187,3 +187,25 @@ dialog .form-grid {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+.changelog {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.changelog h3 {
+  font-size: 15px;
+  margin: 14px 0 6px;
+}
+.changelog h3:first-child {
+  margin-top: 0;
+}
+.changelog ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.changelog li + li {
+  margin-top: 4px;
+}

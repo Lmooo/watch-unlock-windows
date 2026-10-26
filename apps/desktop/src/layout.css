@@ -400,3 +400,15 @@ main {
   height: 46px;
   background: #fff;
 }
+.version-link {
+  margin-top: 10px;
+  padding: 4px 0;
+  background: none;
+  color: var(--sidebar-text);
+  font-size: 12px;
+  text-align: left;
+}
+.version-link:hover {
+  color: #fff;
+  text-decoration: underline;
+}

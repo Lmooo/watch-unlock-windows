@@ -241,19 +241,34 @@ fn advertising_label(status: GattServiceProviderAdvertisementStatus) -> &'static
     }
 }
 
+/// Why a pairing window could not run. Fixed labels only: the UI maps each to an explanation
+/// and a fix, and no WinRT error text ever leaves the process.
+#[derive(Debug)]
+struct Unavailable(&'static str);
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str(self.0) }
+}
+impl std::error::Error for Unavailable {}
+
+fn unavailable(reason: &'static str) -> anyhow::Error { Unavailable(reason).into() }
+
 fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
     let end = Instant::now() + Duration::from_secs(seconds);
     unsafe { RoInitialize(RO_INIT_MULTITHREADED)?; }
     let _apartment = Apartment;
-    let adapter = wait(BluetoothAdapter::GetDefaultAsync()?, operation_deadline(end, 15))?;
-    ensure!(adapter.IsLowEnergySupported()? && adapter.IsPeripheralRoleSupported()?, "BLE peripheral mode unavailable");
-    let radio = wait(adapter.GetRadioAsync()?, operation_deadline(end, 15))?;
-    ensure!(radio.State()? == RadioState::On, "Bluetooth is off");
-    let window = create_window(end)?;
+    // Preflight in the order a user can act on: adapter, radio, then the capabilities pairing needs.
+    let adapter = BluetoothAdapter::GetDefaultAsync().ok()
+        .and_then(|operation| wait(operation, operation_deadline(end, 15)).ok())
+        .ok_or_else(|| unavailable("no_adapter"))?;
+    let radio = wait(adapter.GetRadioAsync()?, operation_deadline(end, 15)).map_err(|_| unavailable("no_adapter"))?;
+    if radio.State()? != RadioState::On { return Err(unavailable("radio_off")); }
+    if !adapter.IsLowEnergySupported()? { return Err(unavailable("le_unsupported")); }
+    if !adapter.IsPeripheralRoleSupported()? { return Err(unavailable("peripheral_unsupported")); }
+    let window = create_window(end).map_err(|_| unavailable("service_failed"))?;
     let parameters = GattServiceProviderAdvertisingParameters::new()?;
     parameters.SetIsConnectable(true)?;
     parameters.SetIsDiscoverable(true)?;
-    window.provider.StartAdvertisingWithParameters(&parameters)?;
+    window.provider.StartAdvertisingWithParameters(&parameters).map_err(|_| unavailable("service_failed"))?;
     let mut started = false;
     let mut next_report = Instant::now();
     let mut next_verify = Instant::now();
@@ -270,7 +285,7 @@ fn run_window(seconds: u64, state: &mut Snapshot) -> Result<&'static str> {
         state.subscriptions = clients.Size()?;
         if status == GattServiceProviderAdvertisementStatus::Aborted {
             let since = *aborted_since.get_or_insert(now);
-            ensure!(now.duration_since(since) < Duration::from_secs(3), "Pairing advertising aborted");
+            if now.duration_since(since) >= Duration::from_secs(3) { return Err(unavailable("advertising_aborted")); }
         } else { aborted_since = None; }
         if matches!(status, GattServiceProviderAdvertisementStatus::Started | GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData)
             && !started {
@@ -310,7 +325,7 @@ pub fn run(seconds: u64) -> Result<()> {
     emit(event("stopped", &state, match &result {
         Ok(reason) => reason,
         Err(_) if CANCELLED.load(Ordering::Acquire) => "cancelled",
-        Err(_) => "unavailable",
+        Err(error) => error.downcast_ref::<Unavailable>().map_or("unavailable", |reason| reason.0),
     }));
     result.map(|_| ()).map_err(|_| anyhow::anyhow!("Pairing window unavailable; check Bluetooth and BLE peripheral support"))
 }
@@ -318,6 +333,15 @@ pub fn run(seconds: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_reasons_survive_as_fixed_labels() {
+        for reason in ["no_adapter", "radio_off", "le_unsupported", "peripheral_unsupported", "service_failed", "advertising_aborted"] {
+            let error = unavailable(reason);
+            assert_eq!(error.downcast_ref::<Unavailable>().map(|value| value.0), Some(reason));
+        }
+        assert!(anyhow::anyhow!("other").downcast_ref::<Unavailable>().is_none());
+    }
 
     #[test]
     fn invalid_duration_does_not_touch_bluetooth() {

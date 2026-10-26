@@ -24,7 +24,8 @@
 `package` 按以下顺序执行：
 1. 生成第三方许可清单（`scripts/Export-ThirdPartyNotices.ps1`）；
 2. 运行全部测试，并编译后端的 release 版本；
-3. 执行 `tauri build --bundles nsis`，生成 `dist/Watch Unlock_x.y.z_x64-setup.exe` 和 `SHA256SUMS.txt`。
+3. 执行 `tauri build --bundles nsis`，生成安装程序和它的更新签名；
+4. 在 `dist/` 中输出 `WatchUnlock_x.y.z_x64-setup.exe`、`.sig`、`latest.json`（更新清单，说明取自 `CHANGELOG.md` 中当前版本那一节）和 `SHA256SUMS.txt`。
 
 第一次打包时，Tauri 会自动下载免费的 NSIS 工具，放在 Tauri 自己的缓存目录里。
 
@@ -45,6 +46,17 @@
 用户数据（`%LOCALAPPDATA%\WatchUnlockWindows\`）在卸载时会保留。
 
 登录组件只信任与它的 DLL 位于同一目录、并且该目录在 Program Files 之内的 `watchd.exe`。在开发目录里运行的后台可以扫描和保存配置，但无法真正解锁；要在真机上验证，请打包后运行 setup.exe。
+
+## 自动更新与签名密钥
+
+应用通过 `tauri-plugin-updater` 读取 `tauri.conf.json` 中 `plugins.updater.endpoints` 列出的 `latest.json`，只接受用 `pubkey` 对应私钥签名的安装包。
+
+- 发版前先在 `CHANGELOG.md` 里写好 `## x.y.z` 一节，并同步修改 `tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 的版本号；缺少这一节时打包会报错。
+- 私钥用 `npx tauri signer generate` 生成。打包时优先读取环境变量 `TAURI_SIGNING_PRIVATE_KEY`（和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）；没有设置时，读取本机用 DPAPI 加密保存的 `%USERPROFILE%\.watch-unlock\updater-key.dpapi`，只在打包进程的环境变量里解密。
+- **私钥必须另外备份（例如放进密码管理器）。私钥一旦丢失，已经安装的用户就再也无法自动更新，只能手动下载新版安装。** 私钥不能提交到仓库。
+- 设置 `-GiteeRepo owner/repo`（或环境变量 `WATCH_UNLOCK_GITEE_REPO`）时，打包还会写出 `updates/latest-gitee.json`，下载地址指向 Gitee 发行版。
+
+发版：提交全部改动后运行 `./scripts/Publish.ps1`。它会给当前提交打 `v<版本>` 标签，把 `main` 和标签推送到 `origin` 与 `gitee`（没有配置的远程会跳过），并用 `gh` 创建 GitHub Release，上传安装程序、`.sig`、`latest.json` 和 `SHA256SUMS.txt`。加 `-WhatIf` 只做检查、不发布。Gitee 发行版的附件需要在网页上手动上传。
 
 ## 开发界面
 

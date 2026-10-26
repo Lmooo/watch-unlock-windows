@@ -55,6 +55,8 @@ fn stop_pairing(processes: State<Processes>) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Processes::default())
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {

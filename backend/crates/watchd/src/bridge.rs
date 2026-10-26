@@ -32,8 +32,12 @@ pub fn run() -> Result<()> {
     })();
     let response = match result {
         Ok(data) => json!({"ok":true,"data":data}),
-        // Library errors can carry input. Keep the external error stable and redacted.
-        Err(_) => json!({"ok":false,"error":"操作失败，请检查参数、账户密码、配对身份或应用目录权限。"}),
+        // Library errors can carry input. Keep the external error stable and redacted; only the
+        // fixed notification categories, which carry no input, are shown as they are.
+        Err(error) => match error.downcast_ref::<crate::notify::Failure>() {
+            Some(failure) => json!({"ok":false,"error":failure.to_string()}),
+            None => json!({"ok":false,"error":"操作失败，请检查参数、账户密码、配对身份或应用目录权限。"}),
+        },
     };
     println!("{}", serde_json::to_string(&response)?);
     std::io::stdout().flush()?;

@@ -4,7 +4,9 @@ param(
     [string]$Action = 'check',
     [string]$RustToolsRoot = $env:WATCH_UNLOCK_TOOL_ROOT,
     [string]$ResourceToolsRoot = $env:WATCH_UNLOCK_RESOURCE_TOOLS,
-    [string]$RustToolchain = $env:WATCH_UNLOCK_RUST_TOOLCHAIN
+    [string]$RustToolchain = $env:WATCH_UNLOCK_RUST_TOOLCHAIN,
+    # Gitee mirror "owner/repo"; when set, package also writes updates/latest-gitee.json.
+    [string]$GiteeRepo = $env:WATCH_UNLOCK_GITEE_REPO
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +14,8 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $savedEnvironment = @{}
 foreach ($name in @('PATH','CARGO_HOME','RUSTUP_HOME','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS',
     'CARGO_TARGET_DIR','CARGO_BUILD_TARGET','CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER',
-    'CC_x86_64_pc_windows_gnu','RC_x86_64_pc_windows_gnu','npm_config_cache','RUSTUP_TOOLCHAIN')) {
+    'CC_x86_64_pc_windows_gnu','RC_x86_64_pc_windows_gnu','npm_config_cache','RUSTUP_TOOLCHAIN',
+    'TAURI_SIGNING_PRIVATE_KEY','TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 $logRoot = Join-Path $projectRoot 'artifacts/build'
@@ -176,20 +179,60 @@ function Test-DesktopTools {
     }
 }
 
+function Set-UpdaterSigningKey {
+    # Update packages must be signed, or installed copies refuse them. The private key comes from
+    # the environment, or from the DPAPI-protected file this Windows account created with
+    # `tauri signer generate`. It only ever lives in this process's environment.
+    if ($env:TAURI_SIGNING_PRIVATE_KEY) { return }
+    $keyFile = Join-Path $env:USERPROFILE '.watch-unlock\updater-key.dpapi'
+    if (-not (Test-Path -LiteralPath $keyFile)) {
+        throw "Updater signing key not found. Set TAURI_SIGNING_PRIVATE_KEY or restore $keyFile from your backup."
+    }
+    $secure = (Get-Content -LiteralPath $keyFile -Raw).Trim() | ConvertTo-SecureString
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $env:TAURI_SIGNING_PRIVATE_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+    if ($null -eq $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '' }
+}
+
 function Invoke-Installer {
     # `tauri build` compiles the release window with the embedded UI and wraps it, the backend
-    # (bundle.resources) and the installer hooks into an NSIS setup.exe. On first use it
-    # downloads the free NSIS toolset into Tauri's own cache.
+    # (bundle.resources) and the installer hooks into an NSIS setup.exe plus its update signature.
+    # On first use it downloads the free NSIS toolset into Tauri's own cache.
+    Set-UpdaterSigningKey
     Push-Location (Join-Path $projectRoot 'apps/desktop')
     try { Invoke-Checked 'npm.cmd' @('run','tauri','--','build','--bundles','nsis') }
     finally { Pop-Location }
 }
 
+function Get-ReleaseNotes([string]$Version) {
+    # The `## <version>` section of CHANGELOG.md, without its heading.
+    $lines = [IO.File]::ReadAllLines((Join-Path $projectRoot 'CHANGELOG.md'), [Text.Encoding]::UTF8)
+    $start = [Array]::FindIndex($lines, [Predicate[string]]{ param($line) $line.Trim() -eq "## $Version" })
+    if ($start -lt 0) { throw "CHANGELOG.md has no '## $Version' section; add the release notes first." }
+    $section = foreach ($line in $lines[($start + 1)..($lines.Length - 1)]) {
+        if ($line.StartsWith('## ')) { break }
+        $line
+    }
+    ($section -join "`n").Trim()
+}
+
+function New-UpdateManifest([string]$Version, [string]$Notes, [string]$Signature, [string]$Url) {
+    [ordered]@{
+        version = $Version
+        notes = $Notes
+        pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        platforms = [ordered]@{ 'windows-x86_64' = [ordered]@{ signature = $Signature; url = $Url } }
+    } | ConvertTo-Json -Depth 4
+}
+
 function New-ReleasePackage {
     & (Join-Path $projectRoot 'scripts/Check-Release.ps1')
+    $version = ([IO.File]::ReadAllText((Join-Path $projectRoot 'apps/desktop/src-tauri/tauri.conf.json')) | ConvertFrom-Json).version
+    $notes = Get-ReleaseNotes $version
     $bundle = Join-Path $projectRoot 'apps/desktop/src-tauri/target/release/bundle/nsis'
-    $setup = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe' -File | Sort-Object LastWriteTime -Descending)
-    if (-not $setup.Count) { throw 'tauri build did not produce a setup.exe.' }
+    $setup = Get-Item -LiteralPath (Join-Path $bundle "Watch Unlock_${version}_x64-setup.exe")
+    $signature = Get-Item -LiteralPath "$($setup.FullName).sig"
     $distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'dist'))
     if ((Test-Path -LiteralPath $distRoot) -and
         ((Get-Item -LiteralPath $distRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -198,11 +241,24 @@ function New-ReleasePackage {
     # Recreate only this output directory; stale files must not survive packaging.
     if (Test-Path -LiteralPath $distRoot) { Remove-Item -LiteralPath $distRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $distRoot | Out-Null
-    Copy-Item -LiteralPath $setup[0].FullName -Destination $distRoot
-    $copied = Join-Path $distRoot $setup[0].Name
-    '{0}  {1}' -f (Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash.ToLowerInvariant(),$setup[0].Name |
-        Set-Content -LiteralPath (Join-Path $distRoot 'SHA256SUMS.txt') -Encoding ASCII
-    Write-Output "Installer: dist/$($setup[0].Name)"
+    # No spaces: GitHub would rename the asset, and the update manifest must name it exactly.
+    $name = "WatchUnlock_${version}_x64-setup.exe"
+    Copy-Item -LiteralPath $setup.FullName -Destination (Join-Path $distRoot $name)
+    Copy-Item -LiteralPath $signature.FullName -Destination (Join-Path $distRoot "$name.sig")
+    $signatureText = [IO.File]::ReadAllText($signature.FullName).Trim()
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $githubUrl = "https://github.com/whyy1/watch-unlock-windows/releases/download/v$version/$name"
+    [IO.File]::WriteAllText((Join-Path $distRoot 'latest.json'), (New-UpdateManifest $version $notes $signatureText $githubUrl), $utf8)
+    if ($GiteeRepo) {
+        # Gitee mirror: the manifest is served raw from the repository and points at its release.
+        $giteeUrl = "https://gitee.com/$GiteeRepo/releases/download/v$version/$name"
+        $giteeManifest = Join-Path $projectRoot 'updates/latest-gitee.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $giteeManifest) -Force | Out-Null
+        [IO.File]::WriteAllText($giteeManifest, (New-UpdateManifest $version $notes $signatureText $giteeUrl), $utf8)
+    }
+    $hash = (Get-FileHash -LiteralPath (Join-Path $distRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  $name" | Set-Content -LiteralPath (Join-Path $distRoot 'SHA256SUMS.txt') -Encoding ASCII
+    Write-Output "Installer: dist/$name (version $version, signed for updates)"
 }
 
 

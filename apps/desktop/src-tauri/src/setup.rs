@@ -20,6 +20,8 @@ pub struct SetupStatus {
     /// The Credential Provider is registered, so the lock screen can be unlocked.
     provider_registered: bool,
     autostart: bool,
+    /// The name the watch lists this PC under while pairing (Windows' Bluetooth name).
+    computer_name: String,
 }
 
 fn system_tool(name: &str) -> PathBuf {
@@ -69,12 +71,27 @@ fn autostart_enabled() -> bool {
     run("reg.exe", &["query", RUN_KEY, "/v", RUN_VALUE]) || run("schtasks.exe", &["/Query", "/TN", LEGACY_TASK])
 }
 
+/// Windows advertises under the device name, which is the DNS host name (case kept), not the
+/// upper-case NetBIOS `COMPUTERNAME`. Empty when it cannot be read; the guide then omits it.
+fn computer_name() -> String {
+    let mut command = hidden(Command::new(system_tool("hostname.exe")));
+    command.stdout(Stdio::piped());
+    command.output().ok().filter(|output| output.status.success())
+        .map(|output| clean_name(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_default()
+}
+
+fn clean_name(raw: &str) -> String {
+    raw.trim().chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
 fn current_status() -> SetupStatus {
     let running_installed = running_installed();
     SetupStatus {
         running_installed,
         provider_registered: run("reg.exe", &["query", PROVIDER_KEY]),
         autostart: running_installed && autostart_enabled(),
+        computer_name: computer_name(),
     }
 }
 
@@ -103,4 +120,16 @@ pub async fn set_autostart(enabled: bool) -> Result<SetupStatus, String> {
         if !changed { return Err("autostart_failed".into()); }
         Ok(current_status())
     }).await.map_err(|_| "setup_task_failed")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_name;
+
+    #[test]
+    fn computer_name_drops_line_breaks_controls_and_overlong_tails() {
+        assert_eq!(clean_name("y1-pc\r\n"), "y1-pc");
+        assert_eq!(clean_name("a\u{7}b"), "ab");
+        assert_eq!(clean_name(&"x".repeat(100)).len(), 64);
+    }
 }
