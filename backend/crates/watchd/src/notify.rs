@@ -9,9 +9,12 @@ use windows::Win32::Foundation::GetLastError;
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen, WinHttpOpenRequest,
     WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-    WinHttpSetOption, WinHttpSetTimeouts, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    WinHttpSetOption, WinHttpSetTimeouts, SECURITY_FLAG_IGNORE_CERT_CN_INVALID,
+    SECURITY_FLAG_IGNORE_CERT_DATE_INVALID, SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE,
+    SECURITY_FLAG_IGNORE_UNKNOWN_CA, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
     WINHTTP_FLAG_SECURE, WINHTTP_INTERNET_SCHEME_HTTPS, WINHTTP_OPTION_REDIRECT_POLICY,
-    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_OPTION_SECURITY_FLAGS, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_STATUS_CODE,
 };
 
 const MAX_RESPONSE: usize = 4096;
@@ -75,7 +78,7 @@ fn valid_key(key: &str) -> bool {
 }
 
 /// Host, port and path+query of a URL that passed `valid_https_url`.
-struct Target { host: Vec<u16>, port: u16, object: Vec<u16> }
+struct Target { host: Vec<u16>, port: u16, object: Vec<u16>, ip: bool }
 
 fn crack(url: &str) -> Option<Target> {
     if url.len() > 2048 || !url.to_ascii_lowercase().starts_with("https://")
@@ -101,12 +104,19 @@ fn crack(url: &str) -> Option<Target> {
         unsafe { std::slice::from_raw_parts(pointer.0, length as usize).to_vec() }
     };
     let mut host = slice(parts.lpszHostName, parts.dwHostNameLength);
+    let ip = ip_host(&String::from_utf16_lossy(&host));
     host.push(0);
     let mut object = slice(parts.lpszUrlPath, parts.dwUrlPathLength);
     if object.is_empty() { object.push(u16::from(b'/')); }
     object.extend(slice(parts.lpszExtraInfo, parts.dwExtraInfoLength));
     object.push(0);
-    Some(Target { host, port: parts.nPort, object })
+    Some(Target { host, port: parts.nPort, object, ip })
+}
+
+/// A server addressed by IP cannot hold a publicly trusted certificate, which is how people
+/// self-host Bark. Only such hosts skip certificate checks; a host name is always verified.
+fn ip_host(host: &str) -> bool {
+    host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_ok()
 }
 
 fn valid_https_url(url: &str) -> bool { crack(url).is_some() }
@@ -162,6 +172,11 @@ fn post(target: &Target, payload: &[u8]) -> Result<(), Failure> {
         if request.0.is_null() { return Err(Failure::Network); }
         let never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER.to_ne_bytes();
         WinHttpSetOption(Some(request.0), WINHTTP_OPTION_REDIRECT_POLICY, Some(&never)).map_err(network)?;
+        if target.ip {
+            let ignore = (SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID
+                | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE).to_ne_bytes();
+            WinHttpSetOption(Some(request.0), WINHTTP_OPTION_SECURITY_FLAGS, Some(&ignore)).map_err(network)?;
+        }
         let headers: Vec<u16> = "Content-Type: application/json\r\n".encode_utf16().collect();
         let length = u32::try_from(payload.len()).map_err(|_| Failure::Network)?;
         if WinHttpSendRequest(request.0, Some(&headers), Some(payload.as_ptr().cast()), length, length, 0).is_err()
@@ -252,6 +267,17 @@ mod tests {
         assert_eq!(bare.port, 443);
         assert_eq!(String::from_utf16_lossy(&bare.object), "/\0");
     }
+
+    #[test]
+    fn only_ip_addressed_servers_skip_certificate_checks() {
+        assert!(!target_ip("https://api.day.app/push"));
+        assert!(!target_ip("https://bark.example.com:8443/push"));
+        assert!(!target_ip("https://192.168.1.10.example.com/push"));
+        assert!(target_ip("https://192.168.1.10:8080/push"));
+        assert!(target_ip("https://[fd00::1]:8443/push"));
+    }
+
+    fn target_ip(url: &str) -> bool { crack(url).unwrap().ip }
 
     #[test]
     fn provider_acceptance_requires_http_and_json_success() {
