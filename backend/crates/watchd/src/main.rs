@@ -40,7 +40,9 @@ enum Cmd {
     /// Import an explicitly selected CurrentUser-DPAPI identity without displaying it.
     ImportDevice { #[arg(long)] identity_file:std::path::PathBuf, #[arg(long)] name:String },
     /// Elevated, one-time binding of a Windows-paired watch's IRK. Started by the UI only.
-    BindPaired { #[arg(long)] address:String, #[arg(long)] name:String },
+    BindPaired { #[arg(long)] address:String, #[arg(long)] name:String,
+        /// The non-elevated process that asked; its account must match the elevated one.
+        #[arg(long)] launcher_pid:Option<u32> },
     /// Validate and store the current Windows account password interactively.
     Enroll,
     /// Send an explicit notification test. Does not unlock Windows.
@@ -56,7 +58,7 @@ fn main() {
         Cmd::Pair {seconds} => pairing::run(seconds),
         Cmd::ImportDevice {identity_file,name} => bridge::import_device(&identity_file,&name),
         // The exit code tells the waiting UI request which step stopped; nothing else is printed.
-        Cmd::BindPaired {address,name} => match bind::run(&address,&name) {
+        Cmd::BindPaired {address,name,launcher_pid} => match bind::run(&address,&name,launcher_pid) {
             Ok(()) => Ok(()),
             Err(failure) => std::process::exit(failure.code()),
         },

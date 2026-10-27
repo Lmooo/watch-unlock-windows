@@ -29,6 +29,12 @@ pub fn report() -> Result<Value> {
     line(&mut text, "版本", &windows_version());
     line(&mut text, "生成时间", &local_time(now).unwrap_or_else(|| "未知".into()));
 
+    section(&mut text, "权限");
+    // This process inherits the window's elevation, so it tells whether the app runs as administrator.
+    let elevated = crate::bind::is_elevated().ok().map_or("未知", |value| yes_no(value, "是", "否"));
+    line(&mut text, "应用以管理员身份运行", elevated);
+    line(&mut text, "数据目录所有者", data_owner());
+
     let devices = registry::load_devices().unwrap_or_default();
     section(&mut text, "后台状态");
     status(&mut text, now, &devices);
@@ -76,6 +82,19 @@ fn line(text: &mut String, name: &str, value: &str) {
 
 fn yes_no(value: bool, yes: &'static str, no: &'static str) -> &'static str {
     if value { yes } else { no }
+}
+
+/// A category only, never the account name.
+fn data_owner() -> &'static str {
+    use crate::bind::DataOwner;
+    let Ok(dir) = registry::data_dir() else { return "未知" };
+    if !dir.exists() { return "没有数据目录"; }
+    match crate::bind::data_dir_owner(&dir) {
+        Ok(DataOwner::CurrentUser) => "当前账户",
+        Ok(DataOwner::Administrators) => "管理员组（目录由以管理员身份运行的程序创建）",
+        Ok(DataOwner::Other) => "其他账户",
+        Err(_) => "未知",
+    }
 }
 
 fn secret_stored(name: &str) -> bool {

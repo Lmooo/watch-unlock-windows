@@ -19,8 +19,9 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation, LookupPrivilegeValueW,
-    RevertToSelf, SecurityImpersonation, TokenElevation, TokenImpersonation, LUID_AND_ATTRIBUTES,
+    AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation, IsWellKnownSid,
+    LookupPrivilegeValueW, RevertToSelf, SecurityImpersonation, TokenElevation, TokenImpersonation,
+    WinBuiltinAdministratorsSid, LUID_AND_ATTRIBUTES,
     OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
     TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_IMPERSONATE, TOKEN_PRIVILEGES,
     TOKEN_QUERY,
@@ -242,10 +243,33 @@ fn verify_identity(irk: [u8; 16]) -> Result<Option<[u8; 16]>> {
     Ok(index.map(|index| candidates[index]))
 }
 
-/// The elevated token must belong to the same account that owns the application data.
-/// DPAPI CurrentUser keys are per account, so a different administrator account would store
-/// a secret the normal application can never decrypt.
-fn data_dir_owned_by_current_user(dir: &Path) -> Result<bool> {
+/// Who owns the application data folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataOwner {
+    CurrentUser,
+    /// A folder first created by an elevated process: Windows makes the Administrators group,
+    /// not the user, the owner. The user's private ACL still applies, so it is not foreign.
+    Administrators,
+    Other,
+}
+
+/// TOKEN_USER of a token, as a buffer whose start is the TOKEN_USER struct.
+fn token_user(token: HANDLE) -> Result<Vec<usize>> {
+    crate::enroll::token_user_buffer(token).context("Token user unavailable")
+}
+
+fn user_sid(buffer: &[usize]) -> PSID {
+    unsafe { (*(buffer.as_ptr().cast::<windows::Win32::Security::TOKEN_USER>())).User.Sid }
+}
+
+fn current_user() -> Result<Vec<usize>> {
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)? };
+    let token = HandleGuard(token);
+    token_user(token.0)
+}
+
+pub fn data_dir_owner(dir: &Path) -> Result<DataOwner> {
     let path = wide(&dir.to_string_lossy());
     let mut owner = PSID::default();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -254,12 +278,36 @@ fn data_dir_owned_by_current_user(dir: &Path) -> Result<bool> {
             Some(&mut owner), None, None, None, &mut descriptor).ok()?;
     }
     let _free = scopeguard_free(descriptor);
+    let user = current_user()?;
+    Ok(if unsafe { EqualSid(owner, user_sid(&user)) }.is_ok() { DataOwner::CurrentUser }
+        else if unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) }.as_bool() { DataOwner::Administrators }
+        else { DataOwner::Other })
+}
+
+/// Whether the process that asked for this binding runs as the same account as this one.
+fn launcher_is_current_user(pid: u32) -> Result<bool> {
+    let process = HandleGuard(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)? });
     let mut token = HANDLE::default();
-    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)? };
+    unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token)? };
     let token = HandleGuard(token);
-    let user = crate::enroll::token_user_buffer(token.0).context("Token user unavailable")?;
-    let user = unsafe { &*(user.as_ptr().cast::<windows::Win32::Security::TOKEN_USER>()) };
-    Ok(unsafe { EqualSid(owner, user.User.Sid) }.is_ok())
+    let launcher = token_user(token.0)?;
+    let user = current_user()?;
+    Ok(unsafe { EqualSid(user_sid(&launcher), user_sid(&user)) }.is_ok())
+}
+
+/// The elevated token must belong to the same account as the application that asked for the
+/// binding. DPAPI CurrentUser keys are per account, so a different administrator account would
+/// store a secret the normal application can never decrypt.
+///
+/// The launcher's account is the direct proof. An Administrators-owned folder is accepted only
+/// with that proof; without a launcher (an older caller) the folder must belong to this user.
+fn same_account(owner: DataOwner, launcher: Option<u32>) -> bool {
+    let launcher_matches = || launcher.is_some_and(|pid| launcher_is_current_user(pid).unwrap_or(false));
+    match owner {
+        DataOwner::CurrentUser => launcher.is_none() || launcher_matches(),
+        DataOwner::Administrators => launcher_matches(),
+        DataOwner::Other => false,
+    }
 }
 
 struct LocalFreeGuard(PSECURITY_DESCRIPTOR);
@@ -270,7 +318,7 @@ impl Drop for LocalFreeGuard {
     }
 }
 
-fn is_elevated() -> Result<bool> {
+pub fn is_elevated() -> Result<bool> {
     let mut token = HANDLE::default();
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)? };
     let token = HandleGuard(token);
@@ -292,12 +340,13 @@ fn valid_name(name: &str) -> bool {
 
 /// Elevated entry point. Requires a matching advertisement; saves nothing otherwise.
 /// The returned failure becomes the exit code, so the caller can say which step stopped.
-pub fn run(address: &str, name: &str) -> std::result::Result<(), Failure> {
+pub fn run(address: &str, name: &str, launcher: Option<u32>) -> std::result::Result<(), Failure> {
     if !registry::valid_address(address) || !valid_name(name) { return Err(Failure::Request); }
     if !is_elevated().unwrap_or(false) { return Err(Failure::NotElevated); }
     let dir = registry::data_dir().map_err(|_| Failure::NoAppData)?;
     if !dir.exists() { return Err(Failure::NoAppData); }
-    if !data_dir_owned_by_current_user(&dir).unwrap_or(false) { return Err(Failure::OtherAccount); }
+    let owner = data_dir_owner(&dir).unwrap_or(DataOwner::Other);
+    if !same_account(owner, launcher) { return Err(Failure::OtherAccount); }
 
     let devices = registry::load_devices().map_err(|_| Failure::Storage)?;
     if devices.iter().any(|d| d.address.as_deref() == Some(address)) { return Err(Failure::AlreadyBound); }
@@ -338,7 +387,10 @@ pub fn launch(address: &str, name: &str) -> Result<serde_json::Value> {
     ensure!(valid_name(name), "Invalid device name");
     let exe = std::env::current_exe()?;
     let exe_wide = wide(&exe.to_string_lossy());
-    let parameters = wide(&format!("bind-paired --address {address} --name \"{}\"", name.trim()));
+    // The elevated side compares its account with this process's, so it knows it binds for the
+    // same user even when the data folder was created by an app run as administrator.
+    let parameters = wide(&format!("bind-paired --address {address} --name \"{}\" --launcher-pid {}",
+        name.trim(), std::process::id()));
     let verb = wide("runas");
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -424,6 +476,30 @@ mod tests {
         let mut codes = Failure::ALL.map(Failure::code).to_vec();
         codes.dedup();
         assert_eq!(codes.len(), Failure::ALL.len());
+    }
+
+    #[test]
+    fn an_administrators_owned_folder_needs_the_launcher_to_be_this_account() {
+        let own = Some(std::process::id());
+        assert!(same_account(DataOwner::CurrentUser, None));
+        assert!(same_account(DataOwner::CurrentUser, own));
+        assert!(same_account(DataOwner::Administrators, own));
+        // Without a launcher, or with one that cannot be checked, only the user's own folder passes.
+        assert!(!same_account(DataOwner::Administrators, None));
+        assert!(!same_account(DataOwner::Administrators, Some(0)));
+        assert!(!same_account(DataOwner::CurrentUser, Some(0)));
+        assert!(!same_account(DataOwner::Other, own));
+        assert!(!same_account(DataOwner::Other, None));
+    }
+
+    #[test]
+    fn a_folder_this_process_creates_is_not_foreign() {
+        let dir = std::env::temp_dir().join(format!("watch-unlock-owner-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Elevated test runs create Administrators-owned folders, ordinary runs user-owned ones.
+        let owner = data_dir_owner(&dir);
+        std::fs::remove_dir(&dir).unwrap();
+        assert_ne!(owner.unwrap(), DataOwner::Other);
     }
 
     #[test]
