@@ -55,7 +55,11 @@ fn main() {
         Cmd::ScanJson {seconds} => adapters::scan_json(seconds),
         Cmd::Pair {seconds} => pairing::run(seconds),
         Cmd::ImportDevice {identity_file,name} => bridge::import_device(&identity_file,&name),
-        Cmd::BindPaired {address,name} => bind::run(&address,&name),
+        // The exit code tells the waiting UI request which step stopped; nothing else is printed.
+        Cmd::BindPaired {address,name} => match bind::run(&address,&name) {
+            Ok(()) => Ok(()),
+            Err(failure) => std::process::exit(failure.code()),
+        },
         Cmd::Enroll => enroll::enroll(),
         Cmd::NotifyTest => notify::notify_test().map_err(anyhow::Error::from),
     };

@@ -46,6 +46,52 @@ use crate::registry::{self, Device};
 /// Process exit code for a completed binding.
 const EXIT_BOUND: i32 = 0;
 const SCAN_SECONDS: u64 = 30;
+
+/// Why an elevated binding stopped. Only this exit code crosses the process boundary; the
+/// elevated process's own error text, which may carry addresses or Windows detail, stays inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Request = 10,
+    NotElevated = 11,
+    NoAppData = 12,
+    OtherAccount = 13,
+    AlreadyBound = 14,
+    TooMany = 15,
+    SystemToken = 16,
+    NoBondedKey = 17,
+    Adapter = 18,
+    NoMatch = 19,
+    Storage = 20,
+}
+
+impl Failure {
+    const ALL: [Failure; 11] = [Self::Request, Self::NotElevated, Self::NoAppData, Self::OtherAccount,
+        Self::AlreadyBound, Self::TooMany, Self::SystemToken, Self::NoBondedKey, Self::Adapter,
+        Self::NoMatch, Self::Storage];
+
+    pub fn code(self) -> i32 { self as i32 }
+
+    fn from_code(code: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|failure| failure.code() as u32 == code)
+    }
+
+    /// Fixed text for the history and the UI. Carries no input.
+    fn message(self) -> &'static str {
+        match self {
+            Self::Request => "绑定未完成：设备信息无效，请刷新“Windows 已配对设备”后重试",
+            Self::NotElevated => "绑定未完成：没有取得管理员权限。绑定需要当前账户是管理员，并在 Windows 管理员确认里点「是」",
+            Self::NoAppData => "绑定未完成：管理员确认所用的账户下没有本应用的数据。请用当前登录的账户确认；刚安装时先打开一次应用并启动后台",
+            Self::OtherAccount => "绑定未完成：管理员确认用的是另一个 Windows 账户，那个账户读不到你的设备和密码。请用当前登录的账户确认",
+            Self::AlreadyBound => "这块手表已经绑定过了，不用重复绑定",
+            Self::TooMany => "绑定未完成：最多绑定 16 块手表，请先移除不用的设备",
+            Self::SystemToken => "绑定未完成：Windows 没有允许读取系统保存的手表密钥，可能被公司策略或安全软件限制",
+            Self::NoBondedKey => "绑定未完成：Windows 里没有这块手表的配对密钥。请在 Windows 蓝牙设置里删除这块手表、在手表上忽略这台电脑，重新配对后再绑定",
+            Self::Adapter => "绑定未完成：蓝牙适配器不可用或无法扫描，请确认蓝牙已打开后重试",
+            Self::NoMatch => "绑定未完成：30 秒内没有收到这块手表的广播。请让手表亮屏、靠近电脑后重试",
+            Self::Storage => "绑定未完成：手表身份没能保存，请检查应用数据目录的权限",
+        }
+    }
+}
 /// UAC approval plus the verification scan, with headroom.
 const LAUNCH_TIMEOUT_MS: u32 = 180_000;
 
@@ -161,12 +207,12 @@ fn local_adapter_key() -> Result<String> {
 }
 
 /// Reads the IRK for one identity address. The thread is SYSTEM only for the registry read.
-fn read_bonded_irk(address: &str) -> Result<[u8; 16]> {
-    let adapter = local_adapter_key()?;
+fn read_bonded_irk(address: &str) -> std::result::Result<[u8; 16], Failure> {
+    let adapter = local_adapter_key().map_err(|_| Failure::Adapter)?;
     let remote = address.replace(':', "").to_ascii_lowercase();
     let key = format!(r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys\{adapter}\{remote}");
-    let _scope = SystemScope::enter()?;
-    read_irk_value(&key)
+    let _scope = SystemScope::enter().map_err(|_| Failure::SystemToken)?;
+    read_irk_value(&key).map_err(|_| Failure::NoBondedKey)
 }
 
 /// Windows and BlueZ disagree on IRK byte order, so both orders are candidates.
@@ -245,25 +291,25 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// Elevated entry point. Requires a matching advertisement; saves nothing otherwise.
-pub fn run(address: &str, name: &str) -> Result<()> {
-    ensure!(registry::valid_address(address), "Invalid device address");
-    ensure!(valid_name(name), "Invalid device name");
-    ensure!(is_elevated()?, "Administrator approval is required");
-    let dir = registry::data_dir()?;
-    ensure!(dir.exists(), "Start the application once before binding");
-    ensure!(data_dir_owned_by_current_user(&dir)?, "Elevated account does not own the application data");
+/// The returned failure becomes the exit code, so the caller can say which step stopped.
+pub fn run(address: &str, name: &str) -> std::result::Result<(), Failure> {
+    if !registry::valid_address(address) || !valid_name(name) { return Err(Failure::Request); }
+    if !is_elevated().unwrap_or(false) { return Err(Failure::NotElevated); }
+    let dir = registry::data_dir().map_err(|_| Failure::NoAppData)?;
+    if !dir.exists() { return Err(Failure::NoAppData); }
+    if !data_dir_owned_by_current_user(&dir).unwrap_or(false) { return Err(Failure::OtherAccount); }
 
-    let devices = registry::load_devices()?;
-    ensure!(!devices.iter().any(|d| d.address.as_deref() == Some(address)), "Device is already bound");
-    ensure!(devices.len() < 16, "Too many devices");
+    let devices = registry::load_devices().map_err(|_| Failure::Storage)?;
+    if devices.iter().any(|d| d.address.as_deref() == Some(address)) { return Err(Failure::AlreadyBound); }
+    if devices.len() >= 16 { return Err(Failure::TooMany); }
 
     let mut irk = read_bonded_irk(address)?;
     let verified = verify_identity(irk);
     crate::vault::erase(&mut irk);
-    let mut key = verified?.ok_or_else(|| anyhow!("No live advertisement matched within the window"))?;
+    let mut key = verified.map_err(|_| Failure::Adapter)?.ok_or(Failure::NoMatch)?;
     let outcome = store_identity(&dir, devices, address, name, &key);
     crate::vault::erase(&mut key);
-    let id = outcome?;
+    let id = outcome.map_err(|_| Failure::Storage)?;
     println!("{}", json!({"status":"bound","device_id":id}));
     Ok(())
 }
@@ -303,10 +349,11 @@ pub fn launch(address: &str, name: &str) -> Result<serde_json::Value> {
         nShow: SW_HIDE.0 as i32,
         ..Default::default()
     };
-    // Only the outcome is recorded; the elevated process's own errors stay inside it.
-    let failed = |detail: &str| {
+    // Only the outcome is recorded; the elevated process's own errors stay inside it. The same
+    // fixed text goes to the history and to the UI.
+    let failed = |detail: &'static str| {
         crate::audit::record("bind_failed", None, detail);
-        anyhow::anyhow!("Binding did not complete")
+        anyhow::Error::new(crate::bridge::Shown(detail))
     };
     if unsafe { ShellExecuteExW(&mut info) }.is_err() || info.hProcess.is_invalid() {
         return Err(failed("绑定未完成：管理员确认被取消或无法提权"));
@@ -316,10 +363,18 @@ pub fn launch(address: &str, name: &str) -> Result<serde_json::Value> {
     let waited = unsafe { WaitForSingleObject(process.0, LAUNCH_TIMEOUT_MS) };
     if waited != WAIT_OBJECT_0 { return Err(failed("绑定未完成：等待管理员确认或读取手表身份超时")); }
     let mut code = 1u32;
-    if unsafe { GetExitCodeProcess(process.0, &mut code) }.is_err() || code as i32 != EXIT_BOUND {
-        return Err(failed("绑定未完成：没能读取或验证这块手表的身份，请让手表靠近电脑后重试"));
+    if unsafe { GetExitCodeProcess(process.0, &mut code) }.is_err() {
+        return Err(failed(UNKNOWN_FAILURE));
     }
+    if code as i32 != EXIT_BOUND { return Err(failed(failure_message(code))); }
     Ok(json!({"status":"bound"}))
+}
+
+/// For exit codes from a crash or an older executable that predates `Failure`.
+const UNKNOWN_FAILURE: &str = "绑定未完成：没能读取或验证这块手表的身份，请让手表靠近电脑后重试";
+
+fn failure_message(code: u32) -> &'static str {
+    Failure::from_code(code).map_or(UNKNOWN_FAILURE, Failure::message)
 }
 
 #[cfg(test)]
@@ -357,6 +412,26 @@ mod tests {
         let irk: [u8; 16] = core::array::from_fn(|i| i as u8 + 1);
         let other: [u8; 16] = core::array::from_fn(|i| 0xA0 ^ i as u8);
         assert_eq!(matching_order(&key_orders(irk), &rpa_for(&other)), None);
+    }
+
+    #[test]
+    fn every_failure_has_its_own_exit_code_and_message() {
+        for failure in Failure::ALL {
+            assert_eq!(Failure::from_code(failure.code() as u32), Some(failure));
+            assert_eq!(failure_message(failure.code() as u32), failure.message());
+            assert_ne!(failure.code(), EXIT_BOUND);
+        }
+        let mut codes = Failure::ALL.map(Failure::code).to_vec();
+        codes.dedup();
+        assert_eq!(codes.len(), Failure::ALL.len());
+    }
+
+    #[test]
+    fn unknown_exit_codes_keep_the_general_message() {
+        // 1 is the generic error exit, 2 a rejected command line, 0xC0000005 a crash.
+        for code in [1, 2, 0xC000_0005] {
+            assert_eq!(failure_message(code), UNKNOWN_FAILURE);
+        }
     }
 
     #[test]
