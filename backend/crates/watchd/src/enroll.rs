@@ -136,7 +136,7 @@ fn validate_password(username: &str, domain: &str, password: &str) -> Result<(),
         )
     };
     for unit in &mut wp {
-        std::ptr::write_volatile(unit, 0);
+        unsafe { std::ptr::write_volatile(unit, 0) };
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     // LogonCache can contain another user's MSA. Valid credentials alone

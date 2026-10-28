@@ -194,7 +194,7 @@ pub fn identity_candidates() -> Vec<(String, String)> {
     if let Some(msa) = msa_identity() {
         return vec![msa];
     }
-    let mut result = Vec::new();
+    let mut result: Vec<(String, String)> = Vec::new();
     if let Ok(username) = std::env::var("USERNAME") {
         let domain = std::env::var("USERDOMAIN")
             .or_else(|_| std::env::var("COMPUTERNAME"))
