@@ -104,6 +104,8 @@ pub fn run()->Result<()> {
     let mut evidence_floor=Instant::now();
     let mut deferred_session=None;
     let mut session_known=true;
+    // Set when the lock-state probes fail, so a silent monitor outage stays visible.
+    let mut session_query_failed=false;
     // Set when this lock cycle submitted an unlock, for the post-unlock notification.
     let mut notify_on_unlock=false;
     audit::record("backend_started",None,"后台已启动；佩戴与手表锁定状态未知");
@@ -155,7 +157,7 @@ pub fn run()->Result<()> {
             match event {
                 pipe::PipeEvent::Hello(connection)=>{
                     // Once per connection: shows when the logon UI actually became ready.
-                    if provider.is_none() && lock.locked {
+                    if provider.is_none() {
                         audit::record("provider_connected",None,"登录界面组件已连接，可以接收解锁");
                     }
                     provider=Some(connection)
@@ -174,6 +176,13 @@ pub fn run()->Result<()> {
             write_status=true;
             let observed=session::current_session_locked();
             session_known=observed.is_ok();
+            if observed.is_err()!=session_query_failed {
+                session_query_failed=observed.is_err();
+                audit::record(if session_query_failed {"session_state_unknown"} else {"session_state_recovered"},
+                    None, if session_query_failed {
+                        "无法读取锁屏状态，距离证据暂停采信"
+                    } else {"锁屏状态恢复可读"});
+            }
             match observed {
                 Ok(locked) if locked!=lock.locked=>{
                     if !locked && std::mem::take(&mut notify_on_unlock) {crate::notify::notify_unlock_async();}

@@ -84,11 +84,30 @@ fn locked_from_session_flags(flags: i32) -> anyhow::Result<bool> {
     }
 }
 
-/// 主动查询当前 WTS 会话的锁定状态。
+/// 主动查询当前会话的锁定状态。
 ///
-/// 部分 Modern Standby/开合盖顺序会漏掉 `WM_WTSSESSION_CHANGE/LOCK`，所以唤醒和
-/// Provider 握手时用此查询校准缓存状态，不能只依赖事件通知。
+/// 两路独立判定：WTS 会话标志，以及输入桌面是否仍可打开。锁屏后输入桌面切到
+/// Winlogon 的安全桌面，普通用户进程 `OpenInputDesktop` 会得到 ERROR_ACCESS_DENIED；
+/// 而 WTS 查询在锁屏期间可能直接失败。任一路成立即视为已锁定，两路都失败才报错。
 pub fn current_session_locked() -> anyhow::Result<bool> {
+    combine_lock_state(wts_session_locked(), input_desktop_locked())
+}
+
+fn combine_lock_state(
+    wts: anyhow::Result<bool>,
+    desktop: anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    if matches!(&wts, Ok(true)) {
+        return Ok(true);
+    }
+    match desktop {
+        Ok(locked) => Ok(locked),
+        Err(_) => wts,
+    }
+}
+
+/// 查询当前 WTS 会话的锁定标志。仅作为一路证据，单独不可靠。
+fn wts_session_locked() -> anyhow::Result<bool> {
     unsafe {
         let mut buffer = windows::core::PWSTR::null();
         let mut bytes = 0u32;
@@ -121,6 +140,31 @@ pub fn current_session_locked() -> anyhow::Result<bool> {
         result
     }
 }
+
+/// 输入桌面是否已经不可用。锁屏后普通用户进程打不开 Winlogon 的安全桌面。
+fn input_desktop_locked() -> anyhow::Result<bool> {
+    let desktop = unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS) };
+    if desktop != 0 {
+        unsafe { let _ = CloseDesktop(desktop); }
+        return Ok(false);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_ACCESS_DENIED_CODE) {
+        Ok(true)
+    } else {
+        Err(error.into())
+    }
+}
+
+#[allow(non_snake_case)]
+#[link(name = "user32")]
+extern "system" {
+    fn OpenInputDesktop(dw_flags: u32, inherit: i32, desired_access: u32) -> isize;
+    fn CloseDesktop(desktop: isize) -> i32;
+}
+
+const DESKTOP_READOBJECTS: u32 = 0x0001;
+const ERROR_ACCESS_DENIED_CODE: i32 = 5;
 
 /// 微软账户身份缓存（注册表读取较慢，启动后只查一次）。
 static MSA_IDENTITY: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
@@ -402,7 +446,14 @@ unsafe fn event_loop(tx: Sender<SessionEvent>) -> windows::core::Result<()> {
     // NOTIFY_FOR_THIS_SESSION = 0。注册失败时主动查询仍可兜底，但必须留下诊断日志。
     match WTSRegisterSessionNotification(hwnd, 0) {
         Ok(()) => tracing::info!("WTS 会话锁定通知注册成功"),
-        Err(error) => tracing::warn!("WTS 会话锁定通知注册失败，将依赖主动状态校准: {error}"),
+        Err(error) => {
+            tracing::warn!("WTS 会话锁定通知注册失败，将依赖主动状态校准: {error}");
+            crate::audit::record(
+                "session_notify_unavailable",
+                None,
+                "WTS 锁屏通知注册失败，改为每秒主动校准锁定状态",
+            );
+        }
     }
     let _hpower = RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
     let _display_power = match RegisterPowerSettingNotification(
@@ -442,8 +493,9 @@ unsafe fn event_loop(tx: Sender<SessionEvent>) -> windows::core::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_nodes, changed_from_off_to_on, changed_to_off, current_sid_node,
-        identity_fields, locked_from_session_flags, normalize_msa_identity, LOGON_CACHE};
+    use super::{cache_nodes, changed_from_off_to_on, changed_to_off, combine_lock_state,
+        current_sid_node, identity_fields, locked_from_session_flags, normalize_msa_identity,
+        LOGON_CACHE};
     use windows::Win32::System::RemoteDesktop::{WTS_SESSIONSTATE_LOCK, WTS_SESSIONSTATE_UNLOCK};
 
     #[test]
@@ -473,6 +525,17 @@ mod tests {
         assert!(locked_from_session_flags(WTS_SESSIONSTATE_LOCK as i32).unwrap());
         assert!(!locked_from_session_flags(WTS_SESSIONSTATE_UNLOCK as i32).unwrap());
         assert!(locked_from_session_flags(99).is_err());
+    }
+
+    #[test]
+    fn lock_state_uses_whichever_probe_succeeds() {
+        // WTS 锁屏期间可能失败，输入桌面被拒仍是可靠证据。
+        assert!(combine_lock_state(Err(anyhow::anyhow!("wts")), Ok(true)).unwrap());
+        assert!(combine_lock_state(Ok(false), Ok(true)).unwrap());
+        assert!(combine_lock_state(Ok(true), Ok(false)).unwrap());
+        assert!(!combine_lock_state(Ok(false), Ok(false)).unwrap());
+        assert!(!combine_lock_state(Ok(false), Err(anyhow::anyhow!("desktop"))).unwrap());
+        assert!(combine_lock_state(Err(anyhow::anyhow!("wts")), Err(anyhow::anyhow!("desktop"))).is_err());
     }
 
     #[test]
