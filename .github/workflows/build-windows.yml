@@ -38,10 +38,22 @@ jobs:
 
       - name: Backend tests and release build
         working-directory: backend
+        shell: pwsh
         run: |
-          cargo build --locked -p watch-unlock-provider
-          cargo test --locked --workspace
-          cargo build --locked --workspace --release
+          function Show-Diagnostics($path) {
+            if (Test-Path $path) {
+              Get-Content $path | Where-Object { $_ -match 'error(\[|:)|FAILED|panicked at' } |
+                Select-Object -First 10 | ForEach-Object { Write-Output ("::error::" + $_) }
+              Get-Content $path -Tail 60 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+          }
+          $log = Join-Path $env:RUNNER_TEMP 'backend-build.log'
+          cargo build --locked -p watch-unlock-provider --message-format=short *>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { Show-Diagnostics $log; exit 1 }
+          cargo test --locked --workspace --lib *>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { Show-Diagnostics $log; exit 1 }
+          cargo build --locked --workspace --release --message-format=short *>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { Show-Diagnostics $log; exit 1 }
 
       - name: Desktop tests
         working-directory: apps/desktop/src-tauri
