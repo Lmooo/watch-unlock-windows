@@ -6,8 +6,11 @@
 use std::sync::mpsc::Sender;
 use std::os::windows::process::CommandExt;
 
-use windows::core::w;
+use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::NetworkManagement::NetManagement::{
+    NetApiBufferFree, NetUserGetInfo, USER_INFO_24,
+};
 use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -122,18 +125,76 @@ pub fn current_session_locked() -> anyhow::Result<bool> {
 /// 微软账户身份缓存（注册表读取较慢，启动后只查一次）。
 static MSA_IDENTITY: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
 
-/// 从 IdentityStore\LogonCache 注册表查找本机微软账户身份（邮箱 + 授权域），结果缓存。
+/// 从 USER_INFO_24 取当前本地账户的微软账户身份；取不到再回退 LogonCache。
 pub fn msa_identity() -> Option<(String, String)> {
-    MSA_IDENTITY.get_or_init(msa_identity_lookup).clone()
+    MSA_IDENTITY
+        .get_or_init(|| net_user_msa_identity().or_else(msa_identity_lookup))
+        .clone()
+}
+
+/// Ask Windows for this local account's Microsoft-account internet identity.
+///
+/// `LogonCache\*\Sid2Name` is keyed by the Microsoft-account SID on MSA-linked
+/// accounts, so the profile-SID lookup below misses it. `NetUserGetInfo` level 24
+/// is the documented mapping between the local SAM account and its online identity.
+fn net_user_msa_identity() -> Option<(String, String)> {
+    let username = std::env::var("USERNAME").ok().filter(|name| !name.is_empty())?;
+    let name: Vec<u16> = username.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buffer: *mut u8 = std::ptr::null_mut();
+    let status = unsafe { NetUserGetInfo(PCWSTR::null(), PCWSTR(name.as_ptr()), 24, &mut buffer) };
+    if status != 0 || buffer.is_null() {
+        if !buffer.is_null() {
+            unsafe { let _ = NetApiBufferFree(Some(buffer as *const core::ffi::c_void)); }
+        }
+        return None;
+    }
+    let result = unsafe {
+        let info = &*(buffer.cast::<USER_INFO_24>());
+        msa_identity_from_user_info(
+            info.usri24_internet_identity.as_bool(),
+            info.usri24_internet_provider_name,
+            info.usri24_internet_principal_name,
+        )
+    };
+    unsafe { let _ = NetApiBufferFree(Some(buffer as *const core::ffi::c_void)); }
+    result
+}
+
+fn msa_identity_from_user_info(identity: bool, provider: PWSTR, principal: PWSTR) -> Option<(String, String)> {
+    if !identity || provider.is_null() || principal.is_null() {
+        return None;
+    }
+    let provider = unsafe { provider.to_string() }.ok()?;
+    let principal = unsafe { principal.to_string() }.ok()?;
+    normalize_msa_identity(&provider, &principal)
+}
+
+fn strip_provider_prefix(value: &str) -> &str {
+    const PREFIX: &str = "MicrosoftAccount\\";
+    match value.get(..PREFIX.len()) {
+        Some(head) if head.eq_ignore_ascii_case(PREFIX) => &value[PREFIX.len()..],
+        _ => value,
+    }
+}
+
+fn normalize_msa_identity(provider: &str, principal: &str) -> Option<(String, String)> {
+    if !provider.eq_ignore_ascii_case("MicrosoftAccount") {
+        return None;
+    }
+    let email = strip_provider_prefix(principal.trim()).trim();
+    (!email.is_empty() && email.contains('@')).then(|| (email.to_owned(), "MicrosoftAccount".into()))
 }
 
 /// 当前会话可用于 LogonUser/Winlogon 的身份候选。
 /// 登记时逐个用用户输入的账户密码校验，最终只保存实际通过验证的身份。
+///
+/// 微软账户的密码不是本地 SAM 密码；拿到 MSA 身份后不能再回退到
+/// `计算机名\用户名`，否则只会白白消耗一次登录尝试、并触发锁定计数。
 pub fn identity_candidates() -> Vec<(String, String)> {
-    let mut result = Vec::new();
     if let Some(msa) = msa_identity() {
-        result.push(msa);
+        return vec![msa];
     }
+    let mut result = Vec::new();
     if let Ok(username) = std::env::var("USERNAME") {
         let domain = std::env::var("USERDOMAIN")
             .or_else(|_| std::env::var("COMPUTERNAME"))
@@ -382,7 +443,7 @@ unsafe fn event_loop(tx: Sender<SessionEvent>) -> windows::core::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{cache_nodes, changed_from_off_to_on, changed_to_off, current_sid_node,
-        identity_fields, locked_from_session_flags, LOGON_CACHE};
+        identity_fields, locked_from_session_flags, normalize_msa_identity, LOGON_CACHE};
     use windows::Win32::System::RemoteDesktop::{WTS_SESSIONSTATE_LOCK, WTS_SESSIONSTATE_UNLOCK};
 
     #[test]
@@ -439,5 +500,24 @@ mod tests {
         assert!(identity_fields("IdentityName REG_SZ local\nAuthenticatingAuthority REG_SZ MicrosoftAccount").is_none());
         assert!(identity_fields("IdentityName REG_BINARY 01\nAuthenticatingAuthority REG_SZ MicrosoftAccount").is_none());
         assert!(identity_fields("IdentityName REG_SZ current@example.test").is_none());
+    }
+
+    #[test]
+    fn microsoft_identity_requires_the_msa_provider_and_an_email() {
+        assert_eq!(
+            normalize_msa_identity("MicrosoftAccount", "user@example.test"),
+            Some(("user@example.test".into(), "MicrosoftAccount".into()))
+        );
+        assert_eq!(
+            normalize_msa_identity("MicrosoftAccount", "MicrosoftAccount\\user@example.test"),
+            Some(("user@example.test".into(), "MicrosoftAccount".into()))
+        );
+        assert_eq!(
+            normalize_msa_identity("microsoftaccount", "  user@example.test  "),
+            Some(("user@example.test".into(), "MicrosoftAccount".into()))
+        );
+        assert!(normalize_msa_identity("AzureAD", "user@example.test").is_none());
+        assert!(normalize_msa_identity("MicrosoftAccount", "local-user").is_none());
+        assert!(normalize_msa_identity("MicrosoftAccount", "   ").is_none());
     }
 }

@@ -1,0 +1,59 @@
+name: build-patched-installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ msa-fix ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Toolchain versions
+        run: |
+          rustup update stable
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+
+      - name: Frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Frontend build
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Backend tests and release build
+        working-directory: backend
+        run: |
+          cargo build --locked -p watch-unlock-provider
+          cargo test --locked --workspace
+          cargo build --locked --workspace --release
+
+      - name: Desktop tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
+
+      - name: NSIS installer
+        working-directory: apps/desktop
+        run: npm run tauri -- build --bundles nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch-unlock-patched
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

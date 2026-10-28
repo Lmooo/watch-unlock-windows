@@ -27,7 +27,10 @@ use windows::Win32::Security::Authentication::Identity::{
     LsaDeregisterLogonProcess, LsaLookupAuthenticationPackage, KERB_INTERACTIVE_UNLOCK_LOGON,
     LSA_STRING, LSA_UNICODE_STRING,
 };
-use windows::Win32::Security::Credentials::CredProtectW;
+use windows::Win32::Security::Credentials::{
+    CredPackAuthenticationBufferW, CredProtectW, CRED_PACK_ID_PROVIDER_CREDENTIALS,
+    CRED_PACK_PROTECTED_CREDENTIALS,
+};
 use windows::Win32::System::Com::{
     CoTaskMemAlloc, CoTaskMemFree, IClassFactory, IClassFactory_Impl,
 };
@@ -61,6 +64,21 @@ fn clear_secret(value: &mut String) {
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     value.clear();
+}
+
+fn is_online_identity(domain: &str) -> bool {
+    domain.eq_ignore_ascii_case("MicrosoftAccount")
+}
+
+/// Online identities are packed as `ProviderName\UserName`; local accounts keep
+/// the bare user name used by the KERB serialization.
+fn online_qualified_user(username: &str) -> String {
+    const PREFIX: &str = "MicrosoftAccount\\";
+    let username = username.trim();
+    match username.get(..PREFIX.len()) {
+        Some(head) if head.eq_ignore_ascii_case(PREFIX) => username.to_owned(),
+        _ => format!("{PREFIX}{username}"),
+    }
 }
 
 fn field_text(field_id: u32) -> windows::core::Result<PWSTR> {
@@ -513,17 +531,54 @@ impl ICredentialProviderCredential_Impl for WatchUnlockProvider_Impl {
         }
         let mut sig = self.state.claim_submission()?;
         let usage = *lock_ok(&self.state.usage);
+        let domain = sig.domain.clone();
+        // Query before allocating: a failed package lookup must not leak a serialization buffer.
+        let auth_package = retrieve_negotiate_auth_package()?;
+
+        if is_online_identity(&domain) {
+            // Microsoft accounts use the ID-provider (online identity) serialization,
+            // not KERB_INTERACTIVE_UNLOCK_LOGON with "MicrosoftAccount" as a domain.
+            let qualified = secret::Wide(online_qualified_user(&sig.username)
+                .encode_utf16().chain(std::iter::once(0)).collect());
+            let password = secret::Wide(sig.password.encode_utf16()
+                .chain(std::iter::once(0)).collect());
+            clear_secret(&mut sig.password);
+            let flags = CRED_PACK_PROTECTED_CREDENTIALS | CRED_PACK_ID_PROVIDER_CREDENTIALS;
+            let mut size = 0u32;
+            // Sizing call: fails with ERROR_INSUFFICIENT_BUFFER and reports the size.
+            let _ = unsafe {
+                CredPackAuthenticationBufferW(
+                    flags, PCWSTR(qualified.as_ptr()), PCWSTR(password.as_ptr()), None, &mut size)
+            };
+            if size == 0 { return Err(E_FAIL.into()); }
+            let raw = unsafe { CoTaskMemAlloc(size as usize) as *mut u8 };
+            if raw.is_null() { return Err(E_OUTOFMEMORY.into()); }
+            if let Err(error) = unsafe {
+                CredPackAuthenticationBufferW(
+                    flags, PCWSTR(qualified.as_ptr()), PCWSTR(password.as_ptr()), Some(raw), &mut size)
+            } {
+                unsafe { CoTaskMemFree(Some(raw as *const core::ffi::c_void)); }
+                return Err(error);
+            }
+            unsafe {
+                (*pcpcs).ulAuthenticationPackage = auth_package;
+                (*pcpcs).clsidCredentialProvider = CLSID;
+                (*pcpcs).cbSerialization = size;
+                (*pcpcs).rgbSerialization = raw;
+                (*pcpgsr).0 = CPGSR_RETURN_CREDENTIAL_FINISHED.0;
+            }
+            tracing::info!("[PROVIDER] GetSerialization：已返回微软账户解锁凭据");
+            return Ok(());
+        }
+
         let message_type = match usage {
             Some(CPUS_LOGON) => KerbInteractiveLogon,
             Some(CPUS_UNLOCK_WORKSTATION) => KerbWorkstationUnlockLogon,
             _ => return Err(E_FAIL.into()),
         };
-        let domain = sig.domain.clone();
         let protected_result = protect_password(&sig.password);
         clear_secret(&mut sig.password);
         let protected_password = secret::Text(protected_result?);
-        // 先查询认证包，避免后续失败时遗失已经分配的序列化缓冲区。
-        let auth_package = retrieve_negotiate_auth_package()?;
         let (raw, size) =
             build_unlock_serialization(&sig.username, &protected_password, &domain, message_type)?;
         unsafe {
@@ -686,5 +741,17 @@ mod tests {
         let first = retrieve_negotiate_auth_package().unwrap();
         let second = retrieve_negotiate_auth_package().unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn online_identity_uses_the_provider_qualified_name() {
+        assert!(is_online_identity("MicrosoftAccount"));
+        assert!(is_online_identity("microsoftaccount"));
+        assert!(!is_online_identity("LMOOO"));
+        assert_eq!(online_qualified_user("user@example.test"), "MicrosoftAccount\\user@example.test");
+        assert_eq!(online_qualified_user("MicrosoftAccount\\user@example.test"),
+            "MicrosoftAccount\\user@example.test");
+        assert_eq!(online_qualified_user("microsoftaccount\\user@example.test"),
+            "microsoftaccount\\user@example.test");
     }
 }

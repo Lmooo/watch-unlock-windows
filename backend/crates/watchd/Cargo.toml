@@ -23,6 +23,7 @@ features = [
   "Win32_System_SystemInformation",
   "Win32_Graphics_Gdi",
   "Win32_Networking_WinHttp",
+  "Win32_NetworkManagement_NetManagement",
   "Win32_Security_Cryptography",
   "Win32_Security_Authorization",
   "Win32_System_LibraryLoader",
